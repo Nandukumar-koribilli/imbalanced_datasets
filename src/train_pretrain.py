@@ -1,3 +1,4 @@
+import os
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -86,6 +87,7 @@ def pretrain_shar(data_dir, epochs=50, batch_size=128, lr=0.002, device='cpu'):
         ax.grid(False)
     
     plt.subplots_adjust(bottom=0.25)
+    os.makedirs("results", exist_ok=True)
     plt.savefig("results/ismote_distribution.png", bbox_inches='tight')
     print("Saved 'results/ismote_distribution.png' matching the paper's style.")
     plt.close()
@@ -138,6 +140,7 @@ def pretrain_shar(data_dir, epochs=50, batch_size=128, lr=0.002, device='cpu'):
     print("--- Pre-training Complete ---")
     
     # Save the encoder weights for fine-tuning
+    os.makedirs("models", exist_ok=True)
     torch.save(model.encoder.state_dict(), "models/shar_encoder_pretrained.pth")
     print("Saved pretrained encoder to 'models/shar_encoder_pretrained.pth'.\n")
     return model.encoder

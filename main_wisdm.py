@@ -6,7 +6,7 @@ from src.train_finetune_wisdm import finetune_shar
 
 def main():
     parser = argparse.ArgumentParser(description="SHAR: Self-Supervised Learning for Activity Recognition")
-    parser.add_argument('--data_dir', type=str, default=r'wisdm-dataset\wisdm-dataset\wisdm-dataset\raw\phone\accel', help='Directory for datasets')
+    parser.add_argument('--data_dir', type=str, default=os.path.join('wisdm-dataset', 'raw', 'phone', 'accel'), help='Directory for datasets')
     parser.add_argument('--pretrain_epochs', type=int, default=50, help='Number of epochs for pre-training (self-supervised)')
     parser.add_argument('--finetune_epochs', type=int, default=50, help='Number of epochs for fine-tuning (supervised)')
     parser.add_argument('--batch_size', type=int, default=128, help='Batch size')

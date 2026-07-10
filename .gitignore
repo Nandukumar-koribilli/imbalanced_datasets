@@ -1,0 +1,29 @@
+# Python caches
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Datasets (users bring their own — see README)
+UCI HAR Dataset/
+wisdm-dataset/
+
+# Trained model checkpoints
+models/*.pth
+
+# Generated figures / reports
+results/*.png
+results/*.pdf
+
+# OS / editor junk
+.DS_Store
+Thumbs.db
+*.swp
+
+# IDE
+.idea/
+.vscode/

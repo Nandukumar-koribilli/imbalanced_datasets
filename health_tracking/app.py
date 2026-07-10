@@ -9,11 +9,10 @@ Run:  streamlit run app.py
 
 import streamlit as st
 import numpy as np
-import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib
 matplotlib.use("Agg")
-import sys, os, time, random
+import sys, os
 
 # ── Ensure parent project is importable ──────────────────────────────────────
 PARENT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -24,23 +23,63 @@ from config import (
     UCI_HAR_LABELS, WISDM_LABELS, MET_VALUES,
     ACTIVITY_CATEGORIES, CATEGORY_COLORS, PALETTE,
     DEFAULT_WEIGHT_KG, DEFAULT_HEIGHT_CM, DEFAULT_AGE, DEFAULT_GENDER,
-    ACTIVITY_HR_ZONE, HR_PROFILES,
+    ACTIVITY_HR_ZONE,
 )
 from health_metrics import (
-    compute_bmr, calories_burned, compute_daily_calories,
-    count_steps, sedentary_ratio, classify_sleep_stage, compute_sleep_score,
-    detect_fall, simulate_heart_rate, simulate_hrv, generate_daily_timeline,
+    compute_bmr, calories_burned, compute_daily_calories, active_calories,
+    count_steps, estimate_steps_from_timeline, sedentary_ratio,
+    simulate_sleep_night, detect_fall, simulate_heart_rate, simulate_hrv,
+    generate_daily_timeline,
 )
 
 # ── Try to load the SHAR model from the parent project ──────────────────────
+# NOTE: torch can fail with OSError (broken DLL / unsupported Python build),
+# not just ImportError — catch everything so the dashboard still runs with
+# simulated data and only the live classifier is disabled.
 MODEL_AVAILABLE = False
+MODEL_IMPORT_ERROR = None
 try:
     from src.shar_model import SHAREncoder, SHAR_Classifier
     from src.dataset_utils import UCIHARDataset
+    from src.dataset_utils_wisdm import WISDMDataset
     import torch
     MODEL_AVAILABLE = True
-except ImportError:
-    pass
+except Exception as e:
+    MODEL_IMPORT_ERROR = str(e)
+
+# iSMOTE is pure numpy/sklearn — always available
+from src.ismote import ismote
+
+# ── Dataset registry ─────────────────────────────────────────────────────────
+UCI_HAR_DIR   = os.path.join(PARENT_DIR, "UCI HAR Dataset")
+WISDM_ACCEL_DIR = os.path.join(PARENT_DIR, "wisdm-dataset", "raw", "phone", "accel")
+
+DATASETS = {
+    "UCI HAR": {
+        "path": UCI_HAR_DIR,
+        "labels": UCI_HAR_LABELS,
+        "in_channels": 9,
+        "num_classes": 6,
+        "seq_len": 128,
+        "classifier_ckpt": "shar_classifier_finetuned.pth",
+        "encoder_ckpt":    "shar_encoder_pretrained.pth",
+        "channel_names": ["body_acc_x","body_acc_y","body_acc_z",
+                           "body_gyro_x","body_gyro_y","body_gyro_z",
+                           "total_acc_x","total_acc_y","total_acc_z"],
+        "description": "6 activities · 30 subjects · smartphone waist sensor · 9 channels @ 50 Hz",
+    },
+    "WISDM": {
+        "path": WISDM_ACCEL_DIR,
+        "labels": WISDM_LABELS,
+        "in_channels": 3,
+        "num_classes": 18,
+        "seq_len": 128,
+        "classifier_ckpt": "shar_classifier_finetuned_wisdm.pth",
+        "encoder_ckpt":    "shar_encoder_pretrained_wisdm.pth",
+        "channel_names": ["accel_x","accel_y","accel_z"],
+        "description": "18 activities · 51 subjects · phone accelerometer · 3 channels @ 20 Hz",
+    },
+}
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 #  PAGE CONFIG
@@ -51,6 +90,68 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded",
 )
+
+# ── Stable per-session simulation seed ───────────────────────────────────────
+# Streamlit reruns the whole script on every widget interaction; without a
+# fixed seed all simulated metrics would re-roll on every click.
+if "sim_seed" not in st.session_state:
+    st.session_state.sim_seed = 42
+np.random.seed(st.session_state.sim_seed)
+
+# ── Session state: dataset selection + balancing pipeline ────────────────────
+for k, v in {
+    "selected_dataset": None,
+    "loaded": False,
+    "balanced": False,
+    "X_orig": None, "y_orig": None,          # FULL training set
+    "X_bal": None,  "y_bal": None,           # iSMOTE-balanced working set
+    "X_sub": None,  "y_sub": None,           # subsample iSMOTE actually saw
+    "orig_counts": None, "bal_counts": None,
+    "sub_counts": None,
+}.items():
+    if k not in st.session_state:
+        st.session_state[k] = v
+
+
+def activities_for(dataset_name):
+    """Return the list of activity strings for the selected dataset."""
+    return list(DATASETS[dataset_name]["labels"].values())
+
+
+@st.cache_data(show_spinner=False)
+def load_training_data(dataset_name: str):
+    """Load train split for balancing. Cached — datasets are read from disk once."""
+    if dataset_name == "UCI HAR":
+        if not MODEL_AVAILABLE:
+            raise RuntimeError("PyTorch is required to load datasets.")
+        ds = UCIHARDataset(DATASETS["UCI HAR"]["path"], split="train")
+        return np.asarray(ds.X, dtype=np.float32), np.asarray(ds.y, dtype=np.int64)
+    if dataset_name == "WISDM":
+        if not MODEL_AVAILABLE:
+            raise RuntimeError("PyTorch is required to load datasets.")
+        ds = WISDMDataset(DATASETS["WISDM"]["path"], split="train")
+        return np.asarray(ds.X, dtype=np.float32), np.asarray(ds.y, dtype=np.int64)
+    raise ValueError(dataset_name)
+
+
+@st.cache_data(show_spinner=False)
+def run_ismote_cached(dataset_name: str, max_samples: int = 1500):
+    """
+    Run iSMOTE on the training split of *dataset_name*, cached in memory.
+    iSMOTE runs a full-dataset KNN validation for every synthetic sample,
+    so we cap the working set to keep the dashboard responsive. The
+    balancing math and rejection logic are identical — just on fewer points.
+    Returns (X_orig, y_orig, X_bal, y_bal).
+    """
+    X, y = load_training_data(dataset_name)
+    if len(y) > max_samples:
+        # Random subsample — proportions are preserved on average, so the
+        # class imbalance the user came here to see is not artificially fixed.
+        rng = np.random.default_rng(0)
+        keep = rng.choice(len(y), max_samples, replace=False)
+        X, y = X[keep], y[keep]
+    X_bal, y_bal = ismote(X, y, k_neighbors=5)
+    return X, y, X_bal, y_bal
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 #  CUSTOM CSS — Premium Dark Theme
@@ -226,20 +327,43 @@ def dark_fig(figsize=(10, 4)):
 #  HELPER: Load model
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 @st.cache_resource
-def load_shar_model():
-    if not MODEL_AVAILABLE:
-        return None
+def load_shar_model(dataset_name):
+    """
+    Load the SHAR classifier for live inference.
+    Prefers the fully fine-tuned checkpoint; falls back to the pretrained
+    encoder alone (classifier head then untrained → predictions unreliable).
+    Returns (model, status) with status ∈ {"finetuned", "encoder_only", None}.
+    """
+    if not MODEL_AVAILABLE or dataset_name not in DATASETS:
+        return None, None
+    ds = DATASETS[dataset_name]
     try:
-        encoder = SHAREncoder(in_channels=9, seq_len=128)
-        model = SHAR_Classifier(encoder, num_classes=6)
-        weights_path = os.path.join(PARENT_DIR, "models", "shar_encoder_pretrained.pth")
-        if os.path.exists(weights_path):
-            state_dict = torch.load(weights_path, map_location="cpu")
-            encoder.load_state_dict(state_dict, strict=False)
+        encoder = SHAREncoder(in_channels=ds["in_channels"], seq_len=ds["seq_len"])
+        model = SHAR_Classifier(encoder, num_classes=ds["num_classes"])
+        finetuned_path = os.path.join(PARENT_DIR, "models", ds["classifier_ckpt"])
+        encoder_path   = os.path.join(PARENT_DIR, "models", ds["encoder_ckpt"])
+        if os.path.exists(finetuned_path):
+            model.load_state_dict(torch.load(finetuned_path, map_location="cpu"))
+            status = "finetuned"
+        elif os.path.exists(encoder_path):
+            encoder.load_state_dict(torch.load(encoder_path, map_location="cpu"))
+            status = "encoder_only"
+        else:
+            return None, None
         model.eval()
-        return model
+        return model, status
     except Exception:
-        return None
+        return None, None
+
+
+@st.cache_resource
+def load_test_dataset(dataset_name):
+    """Cache the test split so it isn't re-read from disk on every rerun."""
+    if dataset_name == "UCI HAR":
+        return UCIHARDataset(DATASETS["UCI HAR"]["path"], split="test")
+    if dataset_name == "WISDM":
+        return WISDMDataset(DATASETS["WISDM"]["path"], split="test")
+    return None
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -256,12 +380,38 @@ with st.sidebar:
 
     st.markdown("---")
 
-    page = st.radio(
-        "🧭 Navigation",
-        ["🏠 Dashboard", "🔥 Calories & Steps", "😴 Sleep Analysis",
-         "⚠️ Fall Detection", "💓 Heart & Stress", "📊 Activity Classifier"],
+    # ── Step 1 is always visible. The dashboard section unlocks after balancing. ──
+    step1_label = "🗂️ 1. Dataset & Balancing"
+    if st.session_state.balanced:
+        step1_label += "  ✅"
+    dashboard_pages = [
+        "🏠 Dashboard", "🔥 Calories & Steps", "😴 Sleep Analysis",
+        "⚠️ Fall Detection", "💓 Heart & Stress", "📊 Activity Classifier",
+    ]
+    st.markdown("##### 🗂️ Step 1 — Setup")
+    pick_setup = st.radio(
+        " ",
+        [step1_label],
         label_visibility="collapsed",
+        key="nav_setup",
     )
+
+    st.markdown("##### 📊 Step 2 — Dashboard")
+    if st.session_state.balanced:
+        pick_dash = st.radio(
+            " ",
+            ["— (stay on setup)"] + dashboard_pages,
+            label_visibility="collapsed",
+            key="nav_dash",
+        )
+    else:
+        st.caption(f"🔒 Locked — pick a dataset and run iSMOTE first.")
+        pick_dash = "— (stay on setup)"
+
+    if pick_dash != "— (stay on setup)":
+        page = pick_dash
+    else:
+        page = "🗂️ Dataset & Balancing"
 
     st.markdown("---")
     st.markdown("##### 👤 Your Profile")
@@ -275,39 +425,356 @@ with st.sidebar:
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-#  PAGE: DASHBOARD
+#  PAGE: DATASET & BALANCING  (Step 1 — mandatory before dashboard unlocks)
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-if page == "🏠 Dashboard":
+if page == "🗂️ Dataset & Balancing":
     st.markdown("""
-    <h1 class="glow-text" style="font-size:2.5rem; font-weight:900; margin-bottom:0.25rem;">
-        🏥 Health Tracking Dashboard
+    <h1 class="glow-text" style="font-size:2.4rem; font-weight:900; margin-bottom:0.25rem;">
+        🗂️ Step 1 — Pick a Dataset & Balance It
     </h1>
-    <p style="color:#94a3b8 !important; font-size:1.05rem; margin-bottom:2rem;">
-        Real-time health insights powered by AI activity recognition from smartphone sensors
+    <p style="color:#94a3b8 !important; font-size:1.05rem; margin-bottom:1.75rem;">
+        This project ships with two Human-Activity-Recognition datasets. Both are
+        <b>imbalanced</b> — some activities have many more samples than others, which
+        biases a classifier. We fix that with <b>iSMOTE</b> (Improved SMOTE), then
+        unlock the health dashboards on top of the balanced dataset.
     </p>
     """, unsafe_allow_html=True)
 
-    # ── Generate daily data ──
-    timeline = generate_daily_timeline()
-    bmr = compute_bmr(user_weight, user_height, user_age, user_gender)
-    daily_cal = compute_daily_calories(timeline, user_weight)
-    sed = sedentary_ratio(timeline)
+    # ── 1.1 Dataset picker ────────────────────────────────────────────────────
+    st.markdown("""<div class="section-card"><h3 style="margin-top:0;">1️⃣ Choose a dataset</h3></div>""",
+                unsafe_allow_html=True)
 
-    # Simulate aggregated metrics
-    total_steps = int(np.random.uniform(6500, 12000))
-    avg_hr = int(np.random.uniform(65, 78))
-    sleep_hours = 7.0
-    sleep_score = int(np.random.uniform(72, 92))
+    pick_cols = st.columns(2)
+    for col, name in zip(pick_cols, DATASETS.keys()):
+        with col:
+            info = DATASETS[name]
+            exists = os.path.isdir(info["path"])
+            active = st.session_state.selected_dataset == name
+            border = PALETTE["accent"] if active else PALETTE["border"]
+            check = " ✅" if active else ""
+            st.markdown(f"""
+            <div class="metric-card" style="border:2px solid {border}; text-align:left; padding:1.25rem 1.5rem;">
+                <div style="font-size:1.4rem; font-weight:800; color:{PALETTE['accent_light']} !important;">
+                    {name}{check}
+                </div>
+                <p style="color:{PALETTE['text_muted']} !important; font-size:0.85rem; margin:0.4rem 0 0.6rem 0;">
+                    {info['description']}
+                </p>
+                <p style="color:{PALETTE['text_muted']} !important; font-size:0.75rem; margin:0;">
+                    {'📁 Found on disk' if exists else '⚠️ Folder missing at ' + info['path']}
+                </p>
+            </div>
+            """, unsafe_allow_html=True)
+            if st.button(f"Select {name}", key=f"pick_{name}",
+                         disabled=not exists, use_container_width=True):
+                # Switching datasets resets the balancing state
+                if st.session_state.selected_dataset != name:
+                    st.session_state.selected_dataset = name
+                    st.session_state.loaded = False
+                    st.session_state.balanced = False
+                    st.session_state.X_orig = st.session_state.y_orig = None
+                    st.session_state.X_bal  = st.session_state.y_bal  = None
+                    st.session_state.orig_counts = st.session_state.bal_counts = None
+                st.rerun()
+
+    if st.session_state.selected_dataset is None:
+        st.info("👆 Pick a dataset to continue.")
+        st.stop()
+
+    ds_name = st.session_state.selected_dataset
+    ds_info = DATASETS[ds_name]
+    label_map = ds_info["labels"]
+
+    # ── 1.2 Load + inspect original distribution ─────────────────────────────
+    st.markdown("<br>", unsafe_allow_html=True)
+    st.markdown(f"""<div class="section-card"><h3 style="margin-top:0;">2️⃣ Original class distribution — <span style="color:{PALETTE['accent_light']}">{ds_name}</span></h3></div>""",
+                unsafe_allow_html=True)
+
+    try:
+        with st.spinner(f"Loading {ds_name} training data…"):
+            X_orig, y_orig = load_training_data(ds_name)
+            st.session_state.X_orig = X_orig
+            st.session_state.y_orig = y_orig
+            unique, counts = np.unique(y_orig, return_counts=True)
+            st.session_state.orig_counts = dict(zip(unique.tolist(), counts.tolist()))
+            st.session_state.loaded = True
+    except Exception as e:
+        st.error(f"Could not load {ds_name}: {e}")
+        st.stop()
+
+    orig_counts = st.session_state.orig_counts
+    max_c, min_c = max(orig_counts.values()), min(orig_counts.values())
+    imbalance = round(max_c / max(1, min_c), 2)
+
+    stat_cols = st.columns(4)
+    for c, (icon, val, lbl) in zip(stat_cols, [
+        ("📊", f"{len(y_orig):,}",     "Total windows"),
+        ("🎯", f"{len(unique)}",        "Classes"),
+        ("⚖️", f"{imbalance}×",         "Imbalance ratio"),
+        ("📡", f"{ds_info['in_channels']}", "Sensor channels"),
+    ]):
+        with c:
+            st.markdown(f"""
+            <div class="metric-card">
+                <div class="metric-icon">{icon}</div>
+                <div class="metric-value" style="font-size:1.6rem;">{val}</div>
+                <div class="metric-label">{lbl}</div>
+            </div>
+            """, unsafe_allow_html=True)
+
+    # Original distribution bar chart
+    fig, ax = dark_fig(figsize=(12, 4))
+    names = [label_map.get(int(c), f"Class {c}") for c in unique]
+    ax.bar(names, counts, color=PALETTE["danger"], alpha=0.85,
+           edgecolor=PALETTE["bg_dark"])
+    ax.set_ylabel("Windows", fontsize=10)
+    ax.set_title("Before iSMOTE — imbalanced", fontsize=12, fontweight="bold")
+    plt.xticks(rotation=45, ha="right", fontsize=9)
+    plt.tight_layout()
+    st.pyplot(fig)
+    plt.close(fig)
+
+    # ── 1.3 Run iSMOTE ───────────────────────────────────────────────────────
+    st.markdown("<br>", unsafe_allow_html=True)
+    st.markdown("""<div class="section-card"><h3 style="margin-top:0;">3️⃣ Run iSMOTE to balance the dataset</h3></div>""",
+                unsafe_allow_html=True)
+
+    st.markdown(f"""
+    <p style="color:{PALETTE['text_muted']} !important; font-size:0.9rem; margin:-0.5rem 0 0.75rem 0;">
+        iSMOTE generates synthetic samples for minority classes by interpolating between
+        each minority sample and one of its k-nearest neighbours in the same class —
+        then validates each new sample by checking that its k nearest neighbours in the
+        <i>entire</i> dataset are also of that class. Overlapping / noisy candidates are rejected.
+        Result: every class ends up with the same number of samples as the largest class.
+    </p>
+    """, unsafe_allow_html=True)
+
+    run_col, note_col = st.columns([1, 3])
+    with run_col:
+        run_now = st.button("🚀 Run iSMOTE", type="primary", use_container_width=True,
+                            disabled=st.session_state.balanced)
+    with note_col:
+        if st.session_state.balanced:
+            st.success(f"✅ Balancing already finished for **{ds_name}** — see charts below.")
+
+    if run_now and not st.session_state.balanced:
+        with st.spinner(f"Running iSMOTE on {ds_name} — this may take 30–60 seconds…"):
+            X_s, y_s, X_b, y_b = run_ismote_cached(ds_name)
+        # X_sub / y_sub is the (possibly subsampled) working set iSMOTE saw.
+        # X_orig / y_orig stays as the FULL training set for step 2's display.
+        st.session_state.X_sub, st.session_state.y_sub = X_s, y_s
+        st.session_state.X_bal, st.session_state.y_bal = X_b, y_b
+        u_s, c_s = np.unique(y_s, return_counts=True)
+        u_b, c_b = np.unique(y_b, return_counts=True)
+        st.session_state.sub_counts = dict(zip(u_s.tolist(), c_s.tolist()))
+        st.session_state.bal_counts = dict(zip(u_b.tolist(), c_b.tolist()))
+        st.session_state.balanced = True
+        st.rerun()
+
+    # ── 1.4 Results — after balancing ────────────────────────────────────────
+    if st.session_state.balanced:
+        st.markdown("<br>", unsafe_allow_html=True)
+        st.markdown(f"""
+        <div class="alert-ok" style="font-size:1.05rem;">
+            🎉 <b>Balancing finished for the {ds_name} dataset.</b>
+            Every class now has the same number of samples. The <b>Step 2 — Dashboard</b>
+            menu on the left is unlocked and works on this balanced data.
+        </div>
+        """, unsafe_allow_html=True)
+
+        st.markdown("<br>", unsafe_allow_html=True)
+        st.markdown("""<div class="section-card"><h3 style="margin-top:0;">4️⃣ Before vs. after — what iSMOTE did</h3></div>""",
+                    unsafe_allow_html=True)
+
+        bal_counts = st.session_state.bal_counts
+        sub_counts = st.session_state.sub_counts
+        full_orig  = st.session_state.orig_counts
+        all_classes = sorted(set(sub_counts) | set(bal_counts))
+        names = [label_map.get(int(c), f"Class {c}") for c in all_classes]
+        o_vals = [sub_counts.get(c, 0) for c in all_classes]
+        b_vals = [bal_counts.get(c, 0) for c in all_classes]
+        synth = [b - o for o, b in zip(o_vals, b_vals)]
+
+        if sum(full_orig.values()) != sum(o_vals):
+            st.caption(
+                f"ℹ️ For a responsive demo, iSMOTE ran on a random "
+                f"{sum(o_vals):,}-window subsample of the full {sum(full_orig.values()):,}-window "
+                f"training set — the class imbalance and rejection math are identical. "
+                f"Full training runs (`python main.py`) use the entire dataset."
+            )
+
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
+        fig.patch.set_facecolor(PALETTE["bg_card"])
+        for ax in (ax1, ax2):
+            ax.set_facecolor(PALETTE["bg_card"])
+            ax.tick_params(colors=PALETTE["text_muted"])
+            for spine in ("top", "right"):
+                ax.spines[spine].set_visible(False)
+            for spine in ("bottom", "left"):
+                ax.spines[spine].set_color(PALETTE["border"])
+            ax.title.set_color(PALETTE["text_primary"])
+            ax.xaxis.label.set_color(PALETTE["text_muted"])
+            ax.yaxis.label.set_color(PALETTE["text_muted"])
+
+        ax1.bar(names, o_vals, color=PALETTE["danger"], alpha=0.85,
+                edgecolor=PALETTE["bg_dark"])
+        ax1.set_title("Before iSMOTE (imbalanced)", fontsize=12, fontweight="bold")
+        ax1.set_ylabel("Windows")
+        ax1.tick_params(axis="x", rotation=45)
+        for lbl in ax1.get_xticklabels():
+            lbl.set_ha("right")
+
+        ax2.bar(names, o_vals, color=PALETTE["accent"], alpha=0.7,
+                edgecolor=PALETTE["bg_dark"], label="Original")
+        ax2.bar(names, synth, bottom=o_vals, color=PALETTE["success"], alpha=0.85,
+                edgecolor=PALETTE["bg_dark"], label="iSMOTE-generated")
+        ax2.set_title("After iSMOTE (balanced)", fontsize=12, fontweight="bold")
+        ax2.set_ylabel("Windows")
+        ax2.legend(facecolor=PALETTE["bg_card"], edgecolor=PALETTE["border"],
+                   labelcolor=PALETTE["text_muted"], fontsize=9)
+        ax2.tick_params(axis="x", rotation=45)
+        for lbl in ax2.get_xticklabels():
+            lbl.set_ha("right")
+
+        plt.tight_layout()
+        st.pyplot(fig)
+        plt.close(fig)
+
+        # Summary stats
+        st.markdown("<br>", unsafe_allow_html=True)
+        c1, c2, c3, c4 = st.columns(4)
+        with c1:
+            st.markdown(f"""
+            <div class="metric-card">
+                <div class="metric-icon">📦</div>
+                <div class="metric-value" style="font-size:1.6rem;">{sum(o_vals):,}</div>
+                <div class="metric-label">Original windows</div>
+            </div>
+            """, unsafe_allow_html=True)
+        with c2:
+            st.markdown(f"""
+            <div class="metric-card">
+                <div class="metric-icon">🧬</div>
+                <div class="metric-value" style="font-size:1.6rem;">{sum(synth):,}</div>
+                <div class="metric-label">Synthetic added</div>
+            </div>
+            """, unsafe_allow_html=True)
+        with c3:
+            st.markdown(f"""
+            <div class="metric-card">
+                <div class="metric-icon">⚖️</div>
+                <div class="metric-value" style="font-size:1.6rem;">1.0×</div>
+                <div class="metric-label">New imbalance ratio</div>
+            </div>
+            """, unsafe_allow_html=True)
+        with c4:
+            st.markdown(f"""
+            <div class="metric-card">
+                <div class="metric-icon">✅</div>
+                <div class="metric-value" style="font-size:1.6rem;">{sum(b_vals):,}</div>
+                <div class="metric-label">Total after iSMOTE</div>
+            </div>
+            """, unsafe_allow_html=True)
+
+        # Per-class table
+        st.markdown("<br>", unsafe_allow_html=True)
+        st.markdown("""<div class="section-card"><h3 style="margin-top:0;">📋 Per-class breakdown</h3></div>""",
+                    unsafe_allow_html=True)
+        import pandas as pd
+        table = pd.DataFrame({
+            "Activity": names,
+            "Original": o_vals,
+            "Synthetic added": synth,
+            "After iSMOTE": b_vals,
+        })
+        st.dataframe(table, use_container_width=True, hide_index=True)
+
+        # ── 1.5 Peek at a real signal from the selected dataset ──────────────
+        st.markdown("<br>", unsafe_allow_html=True)
+        st.markdown("""<div class="section-card"><h3 style="margin-top:0;">🔎 Peek at a real signal window</h3></div>""",
+                    unsafe_allow_html=True)
+
+        pick_class = st.selectbox(
+            "Show a real training window for:",
+            [label_map.get(int(c), f"Class {c}") for c in all_classes],
+            key="peek_class",
+        )
+        cls_id = next(c for c in all_classes if label_map.get(int(c), f"Class {c}") == pick_class)
+        cls_idx = np.where(st.session_state.y_orig == cls_id)[0]
+        if len(cls_idx) > 0:
+            sample = st.session_state.X_orig[cls_idx[np.random.randint(len(cls_idx))]]
+            n_ch = sample.shape[0]
+            fig, ax = dark_fig(figsize=(12, 3.5))
+            palette = plt.cm.viridis(np.linspace(0.15, 0.85, n_ch))
+            for ch in range(n_ch):
+                ax.plot(sample[ch], color=palette[ch],
+                        label=ds_info["channel_names"][ch] if ch < len(ds_info["channel_names"]) else f"ch{ch}",
+                        linewidth=1.1, alpha=0.9)
+            ax.set_xlabel("Timestep")
+            ax.set_ylabel("Sensor value")
+            ax.set_title(f"'{pick_class}' — one raw window ({n_ch} channels × {sample.shape[1]} timesteps)",
+                         fontsize=11, fontweight="bold")
+            ax.legend(facecolor=PALETTE["bg_card"], edgecolor=PALETTE["border"],
+                      labelcolor=PALETTE["text_muted"], fontsize=8, ncol=3)
+            plt.tight_layout()
+            st.pyplot(fig)
+            plt.close(fig)
+
+    # Don't fall through to any other page
+    st.stop()
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#  PAGE: DASHBOARD
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+if page == "🏠 Dashboard":
+    ds_name = st.session_state.selected_dataset
+    ds_info = DATASETS[ds_name]
+    n_orig  = sum(st.session_state.orig_counts.values())
+    st.markdown(f"""
+    <h1 class="glow-text" style="font-size:2.5rem; font-weight:900; margin-bottom:0.25rem;">
+        🏥 Health Tracking Dashboard
+    </h1>
+    <p style="color:#94a3b8 !important; font-size:1.05rem; margin-bottom:0.6rem;">
+        Real-time health insights powered by AI activity recognition from smartphone sensors
+    </p>
+    <div class="alert-ok" style="margin-bottom:1.5rem;">
+        📦 Working on dataset: <b>{ds_name}</b> ·
+        {n_orig:,} windows · {ds_info['num_classes']} classes · balanced ✅
+    </div>
+    """, unsafe_allow_html=True)
+
+    # ── Generate daily data — every metric derives from the SAME simulated day ──
+    timeline = generate_daily_timeline(
+        allowed_activities=activities_for(st.session_state.selected_dataset)
+    )
+    total_cal = compute_daily_calories(timeline, user_weight)   # MET-based, includes resting burn
+    active_cal = active_calories(timeline, user_weight)         # burn above 1-MET baseline
+    sed = sedentary_ratio(timeline)
+    total_steps = estimate_steps_from_timeline(timeline)
+    night = simulate_sleep_night()
+    sleep_hours = night["hours"]
+    sleep_score = night["score"]
+
+    # Simulate the full-day heart-rate series once; card and chart share it
+    hr_times, hr_vals = [], []
+    for seg in timeline:
+        n_samples = max(1, int(seg["duration_min"] / 2))
+        hr_seg = simulate_heart_rate(seg["activity"], n_samples, ramp=False)
+        start_minutes = seg["start_hour"] * 60
+        hr_times.extend((start_minutes + i * 2) / 60 for i in range(n_samples))
+        hr_vals.extend(hr_seg.tolist())
+    avg_hr = int(np.mean(hr_vals))
 
     # ── Top Metric Cards ──
     cols = st.columns(6)
     metrics = [
-        ("🔥", f"{int(daily_cal + bmr)}", "Total kcal"),
+        ("🔥", f"{int(total_cal)}", "Total kcal"),
+        ("⚡", f"{int(active_cal)}", "Active kcal"),
         ("👟", f"{total_steps:,}", "Steps"),
         ("💓", f"{avg_hr}", "Avg HR (bpm)"),
         ("😴", f"{sleep_hours}h", "Sleep"),
         ("🏆", f"{sleep_score}", "Sleep Score"),
-        ("📊", f"{int(sed['ratio']*100)}%", "Active Ratio"),
     ]
     for col, (icon, val, label) in zip(cols, metrics):
         with col:
@@ -362,17 +829,8 @@ if page == "🏠 Dashboard":
         <div class="section-card"><h3 style="margin-top:0;">💓 Heart Rate Trend</h3></div>
         """, unsafe_allow_html=True)
         fig, ax = dark_fig()
-        hrs_in_day = []
-        hr_vals = []
-        for seg in timeline:
-            n_samples = max(1, int(seg["duration_min"] / 2))
-            hr_seg = simulate_heart_rate(seg["activity"], n_samples)
-            start_minutes = seg["start_hour"] * 60
-            times = [start_minutes + i * 2 for i in range(n_samples)]
-            hrs_in_day.extend([t / 60 for t in times])
-            hr_vals.extend(hr_seg.tolist())
-        ax.fill_between(hrs_in_day, hr_vals, alpha=0.3, color=PALETTE["danger"])
-        ax.plot(hrs_in_day, hr_vals, color=PALETTE["danger"], linewidth=1.2, alpha=0.9)
+        ax.fill_between(hr_times, hr_vals, alpha=0.3, color=PALETTE["danger"])
+        ax.plot(hr_times, hr_vals, color=PALETTE["danger"], linewidth=1.2, alpha=0.9)
         ax.axhline(y=100, color=PALETTE["warning"], linestyle="--", linewidth=0.7, alpha=0.5)
         ax.set_xlim(0, 24)
         ax.set_xlabel("Hour")
@@ -387,14 +845,17 @@ if page == "🏠 Dashboard":
         <div class="section-card"><h3 style="margin-top:0;">🔥 Hourly Calorie Burn</h3></div>
         """, unsafe_allow_html=True)
         fig, ax = dark_fig()
+        # Allocate each segment's calories to hours proportionally to the
+        # minutes of actual overlap with each hour bin
         hourly_cals = np.zeros(24)
         for seg in timeline:
-            start_h = int(seg["start_hour"])
-            end_h = min(23, int(seg["start_hour"] + seg["duration_min"] / 60))
-            cal = calories_burned(seg["activity"], seg["duration_min"], user_weight)
-            span = max(1, end_h - start_h + 1)
-            for h in range(start_h, min(24, end_h + 1)):
-                hourly_cals[h] += cal / span
+            cal_per_min = calories_burned(seg["activity"], 1, user_weight)
+            seg_start = seg["start_hour"] * 60
+            seg_end = seg_start + seg["duration_min"]
+            for h in range(24):
+                overlap = min(seg_end, (h + 1) * 60) - max(seg_start, h * 60)
+                if overlap > 0:
+                    hourly_cals[h] += cal_per_min * overlap
         colors = [PALETTE["accent"] if c > np.mean(hourly_cals) else PALETTE["accent_light"] for c in hourly_cals]
         ax.bar(range(24), hourly_cals, color=colors, alpha=0.85, width=0.7, edgecolor=PALETTE["bg_dark"])
         ax.set_xlabel("Hour")
@@ -413,15 +874,16 @@ if page == "🏠 Dashboard":
             st.markdown(f"""
             <div class="alert-danger">
                 ⚠️ <b>Sedentary Alert</b><br>
-                You've been sedentary for <b>{int(sed['sedentary_min'])} min</b> today.
-                Try to stand up and walk every 60 minutes!
+                <b>{sed['sedentary_min']/60:.1f} h</b> of your awake time was sedentary
+                (sleep excluded). Try to stand up and walk every 60 minutes!
             </div>
             """, unsafe_allow_html=True)
         else:
             st.markdown(f"""
             <div class="alert-ok">
                 ✅ <b>Activity Level: Good</b><br>
-                Active/Sedentary ratio: <b>{int(sed['ratio']*100)}%</b>
+                <b>{int(sed['ratio']*100)}%</b> of awake time spent in
+                moderate-to-vigorous activity ({int(sed['active_min'])} min).
             </div>
             """, unsafe_allow_html=True)
     with alert_cols[1]:
@@ -443,7 +905,7 @@ if page == "🏠 Dashboard":
         st.markdown(f"""
         <div class="alert-ok">
             💓 <b>Heart Rate: Normal</b><br>
-            Average resting HR: <b>{avg_hr} bpm</b> — healthy range.
+            24-hour average HR: <b>{avg_hr} bpm</b> — healthy range.
         </div>
         """, unsafe_allow_html=True)
 
@@ -494,9 +956,10 @@ elif page == "🔥 Calories & Steps":
     st.markdown("""<div class="section-card"><h3 style="margin-top:0;">🧮 Activity Calorie Calculator</h3></div>""",
                 unsafe_allow_html=True)
 
+    ds_activities = activities_for(st.session_state.selected_dataset)
     calc_cols = st.columns([2, 1, 1])
     with calc_cols[0]:
-        selected_activity = st.selectbox("Select Activity", list(MET_VALUES.keys()))
+        selected_activity = st.selectbox("Select Activity", ds_activities)
     with calc_cols[1]:
         duration = st.number_input("Duration (min)", 1, 480, 30)
     with calc_cols[2]:
@@ -515,8 +978,8 @@ elif page == "🔥 Calories & Steps":
                 unsafe_allow_html=True)
 
     fig, ax = dark_fig(figsize=(12, 5))
-    activities = list(MET_VALUES.keys())
-    mets = [MET_VALUES[a] for a in activities]
+    activities = ds_activities
+    mets = [MET_VALUES.get(a, 1.3) for a in activities]
     cals_30 = [calories_burned(a, 30, user_weight) for a in activities]
     bar_colors = [CATEGORY_COLORS.get(ACTIVITY_CATEGORIES.get(a, "daily_living"), PALETTE["accent"]) for a in activities]
     bars = ax.barh(range(len(activities)), cals_30, color=bar_colors, alpha=0.85, height=0.65,
@@ -577,9 +1040,8 @@ elif page == "🔥 Calories & Steps":
     fig, ax = dark_fig(figsize=(12, 3.5))
     ax.plot(t, acc_walk, color=PALETTE["accent_light"], linewidth=1, alpha=0.8)
     ax.fill_between(t, acc_walk, alpha=0.15, color=PALETTE["accent"])
-    # Mark peaks
-    from scipy.signal import find_peaks
-    peaks, _ = find_peaks(acc_walk - np.mean(acc_walk), height=0.12, distance=35)
+    # Mark exactly the peaks the step counter detected (no re-computation)
+    peaks = step_info["peak_indices"]
     ax.scatter(t[peaks], acc_walk[peaks], color=PALETTE["danger"], zorder=5, s=40, label="Detected Steps")
     ax.set_xlabel("Time (s)")
     ax.set_ylabel("Acc. Magnitude (g)")
@@ -603,30 +1065,13 @@ elif page == "😴 Sleep Analysis":
     """, unsafe_allow_html=True)
 
     # ── Simulate a night of sleep data ──
-    np.random.seed(101)
-    n_windows = 84  # 7 hours ÷ 5 min windows
-    sleep_stds = []
-    stages = []
-    # Simulate a realistic sleep cycle pattern
-    cycle_pattern = (
-        ["Deep"] * 6 + ["Light"] * 4 + ["REM"] * 3 +
-        ["Light"] * 5 + ["Deep"] * 5 + ["Light"] * 4 + ["REM"] * 4 +
-        ["Light"] * 6 + ["Deep"] * 4 + ["Light"] * 5 + ["REM"] * 5 +
-        ["Light"] * 8 + ["Deep"] * 3 + ["Light"] * 6 + ["REM"] * 6 +
-        ["Light"] * 10
-    )
-    for i in range(n_windows):
-        stage = cycle_pattern[i % len(cycle_pattern)]
-        if stage == "Deep":
-            std = np.random.uniform(0.005, 0.02)
-        elif stage == "Light":
-            std = np.random.uniform(0.02, 0.08)
-        else:  # REM
-            std = np.random.uniform(0.08, 0.18)
-        sleep_stds.append(std)
-        stages.append(stage)
-
-    score = compute_sleep_score(stages)
+    # The stages shown are genuinely produced by classify_sleep_stage() on the
+    # simulated movement signal — the same night the Dashboard summarises.
+    night = simulate_sleep_night()
+    sleep_stds = night["stds"]
+    stages = night["stages"]
+    score = night["score"]
+    n_windows = len(stages)
 
     # ── Top Cards ──
     sc1, sc2, sc3, sc4 = st.columns(4)
@@ -682,12 +1127,12 @@ elif page == "😴 Sleep Analysis":
         ax.fill_between([times[i], times[i+1]], [stage_vals[i], stage_vals[i]],
                         -0.5, color=stage_colors[stages[i]], alpha=0.4)
     ax.step(times, stage_vals, color=PALETTE["accent_light"], linewidth=2, where="post")
+    # Standard hypnogram orientation: REM at the top, Deep at the bottom
     ax.set_yticks([0, 1, 2])
     ax.set_yticklabels(["Deep", "Light", "REM"], fontsize=11, fontweight="bold")
     ax.set_xlabel("Hours of Sleep", fontsize=10)
     ax.set_title("Sleep Stage Transitions", fontsize=12, fontweight="bold")
     ax.set_ylim(-0.5, 2.5)
-    ax.invert_yaxis()
     plt.tight_layout()
     st.pyplot(fig)
     plt.close(fig)
@@ -778,13 +1223,19 @@ elif page == "⚠️ Fall Detection":
         signal[133:160] = np.linspace(1.8, 1.0, 27)  # settling
         signal[160:] = 0.98 + 0.01 * np.random.randn(240)  # laying still
 
-        result = detect_fall(signal)
+        result = detect_fall(signal, sampling_rate=100)  # 400 samples over 4 s
 
         if result["fall_detected"]:
+            immobility_txt = (
+                "Post-impact immobility confirmed — high-priority alert."
+                if result["immobile_after"]
+                else "Movement resumed after impact."
+            )
             st.markdown(f"""
             <div class="alert-danger" style="font-size:1.1rem;">
                 🚨 <b>FALL DETECTED!</b><br>
                 Impact of <b>{result['impact_g']}g</b> detected at sample index {result['impact_index']}.
+                {immobility_txt}
                 Emergency alert would be dispatched to saved contacts.
             </div>
             """, unsafe_allow_html=True)
@@ -827,14 +1278,22 @@ elif page == "⚠️ Fall Detection":
         np.random.seed(55)
         t_n = np.linspace(0, 4, 400)
         normal_signal = 1.0 + 0.2 * np.sin(2 * np.pi * 2 * t_n) + 0.08 * np.random.randn(400)
-        result_n = detect_fall(normal_signal)
+        result_n = detect_fall(normal_signal, sampling_rate=100)
 
-        st.markdown("""
-        <div class="alert-ok">
-            ✅ <b>No Fall Detected</b><br>
-            Normal walking pattern — all acceleration values within safe thresholds.
-        </div>
-        """, unsafe_allow_html=True)
+        if result_n["fall_detected"]:
+            st.markdown(f"""
+            <div class="alert-danger">
+                🚨 <b>False Positive!</b><br>
+                Detector flagged an impact of {result_n['impact_g']}g in a walking signal.
+            </div>
+            """, unsafe_allow_html=True)
+        else:
+            st.markdown("""
+            <div class="alert-ok">
+                ✅ <b>No Fall Detected</b><br>
+                Normal walking pattern — all acceleration values within safe thresholds.
+            </div>
+            """, unsafe_allow_html=True)
 
         st.markdown("<br>", unsafe_allow_html=True)
 
@@ -865,7 +1324,8 @@ elif page == "💓 Heart & Stress":
     """, unsafe_allow_html=True)
 
     # ── Activity selector ──
-    selected_act = st.selectbox("Select an activity to simulate:", list(ACTIVITY_HR_ZONE.keys()))
+    selected_act = st.selectbox("Select an activity to simulate:",
+                                 activities_for(st.session_state.selected_dataset))
     hr_data = simulate_heart_rate(selected_act, 200)
     hrv_data = simulate_hrv(selected_act)
 
@@ -873,7 +1333,6 @@ elif page == "💓 Heart & Stress":
     hc1, hc2, hc3, hc4 = st.columns(4)
     avg_hr = int(np.mean(hr_data))
     max_hr = int(np.max(hr_data))
-    min_hr = int(np.min(hr_data))
     with hc1:
         st.markdown(f"""
         <div class="metric-card">
@@ -998,23 +1457,31 @@ elif page == "💓 Heart & Stress":
 #  PAGE: ACTIVITY CLASSIFIER
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 elif page == "📊 Activity Classifier":
-    st.markdown("""
+    ds_name = st.session_state.selected_dataset
+    ds_info = DATASETS[ds_name]
+    label_map = ds_info["labels"]
+    n_classes = ds_info["num_classes"]
+
+    st.markdown(f"""
     <h1 class="glow-text" style="font-size:2.2rem; font-weight:900;">📊 Live Activity Classifier</h1>
     <p style="color:#94a3b8 !important; margin-bottom:1.5rem;">
-        Real-time activity prediction using the SHAR pre-trained encoder on UCI HAR test data
+        Real-time activity prediction using the SHAR encoder on <b>{ds_name}</b> test data
     </p>
     """, unsafe_allow_html=True)
 
-    model = load_shar_model()
-    data_dir = os.path.join(PARENT_DIR, "UCI HAR Dataset")
+    model, model_status = load_shar_model(ds_name)
+    data_dir = ds_info["path"]
 
     if model is None or not os.path.isdir(data_dir):
-        st.markdown("""
+        import_hint = ""
+        if MODEL_IMPORT_ERROR is not None:
+            import_hint = f"<br><small>PyTorch could not be loaded on this machine: <code>{MODEL_IMPORT_ERROR[:200]}</code></small>"
+        st.markdown(f"""
         <div class="alert-warn">
             ⚠️ <b>Model or dataset not available</b><br>
             To enable live classification, ensure you have:<br>
             1. Run <code>python main.py</code> from the project root to train the model.<br>
-            2. The UCI HAR Dataset folder exists at the project root.
+            2. The UCI HAR Dataset folder exists at the project root.{import_hint}
         </div>
         """, unsafe_allow_html=True)
 
@@ -1054,15 +1521,25 @@ elif page == "📊 Activity Classifier":
                 else:
                     st.info("Run `python main_wisdm.py` to generate this report.")
     else:
-        st.markdown("""
-        <div class="alert-ok">
-            ✅ <b>SHAR Model Loaded Successfully</b> — Ready for live classification
-        </div>
-        """, unsafe_allow_html=True)
+        train_cmd = "python main.py" if ds_name == "UCI HAR" else "python main_wisdm.py"
+        if model_status == "finetuned":
+            st.markdown(f"""
+            <div class="alert-ok">
+                ✅ <b>Fine-tuned SHAR model loaded for {ds_name}</b> — ready for live classification
+            </div>
+            """, unsafe_allow_html=True)
+        else:
+            st.markdown(f"""
+            <div class="alert-warn">
+                ⚠️ <b>Only the pretrained encoder was found for {ds_name}</b> — the classifier
+                head is untrained, so the predictions below are NOT reliable.
+                Run <code>{train_cmd}</code> to fine-tune and save the classifier.
+            </div>
+            """, unsafe_allow_html=True)
 
         st.markdown("<br>", unsafe_allow_html=True)
 
-        dataset = UCIHARDataset(data_dir, split="test")
+        dataset = load_test_dataset(ds_name)
 
         test_idx = st.slider("Select a test sample", 0, len(dataset) - 1, 42)
         x_in, y_true = dataset[test_idx]
@@ -1070,10 +1547,10 @@ elif page == "📊 Activity Classifier":
         with torch.no_grad():
             logits = model(x_in.unsqueeze(0))
             probs = torch.softmax(logits, dim=1).numpy()[0]
-            pred_idx = np.argmax(probs)
+            pred_idx = int(np.argmax(probs))
 
-        true_name = UCI_HAR_LABELS.get(y_true.item(), "Unknown")
-        pred_name = UCI_HAR_LABELS.get(pred_idx, "Unknown")
+        true_name = label_map.get(int(y_true.item()), "Unknown")
+        pred_name = label_map.get(pred_idx, "Unknown")
 
         # ── Result cards ──
         rc1, rc2 = st.columns(2)
@@ -1103,14 +1580,26 @@ elif page == "📊 Activity Classifier":
         with sig_col:
             st.markdown("""<div class="section-card"><h3 style="margin-top:0;">📡 Sensor Signals</h3></div>""",
                         unsafe_allow_html=True)
-            fig, axes = plt.subplots(3, 1, figsize=(8, 7))
+            n_ch = x_in.shape[0]
+            # UCI HAR: 3 rows × 3 channels (body-acc / body-gyro / total-acc).
+            # WISDM:   1 row × 3 channels (accelerometer).
+            if n_ch == 9:
+                fig, axes = plt.subplots(3, 1, figsize=(8, 7))
+                titles = ["Body Accelerometer (X, Y, Z)", "Body Gyroscope (X, Y, Z)", "Total Accelerometer (X, Y, Z)"]
+                axes_iter = list(enumerate(axes))
+                per_row = 3
+            else:
+                fig, ax_single = plt.subplots(1, 1, figsize=(8, 4))
+                axes_iter = [(0, ax_single)]
+                titles = ["Phone Accelerometer (X, Y, Z)"]
+                per_row = n_ch
             fig.patch.set_facecolor(PALETTE["bg_card"])
-            titles = ["Body Accelerometer (X, Y, Z)", "Body Gyroscope (X, Y, Z)", "Total Accelerometer (X, Y, Z)"]
             ch_colors = ["#22c55e", "#3b82f6", "#f59e0b"]
-            for i, ax in enumerate(axes):
+            for i, ax in axes_iter:
                 ax.set_facecolor(PALETTE["bg_card"])
-                for j, col in enumerate(ch_colors):
-                    ax.plot(x_in[i*3 + j].numpy(), color=col, linewidth=1, alpha=0.85)
+                for j in range(per_row):
+                    ax.plot(x_in[i * per_row + j].numpy(), color=ch_colors[j % len(ch_colors)],
+                            linewidth=1, alpha=0.85)
                 ax.set_title(titles[i], fontsize=10, color=PALETTE["text_primary"], fontweight="bold")
                 ax.tick_params(colors=PALETTE["text_muted"])
                 ax.spines["top"].set_visible(False)
@@ -1124,18 +1613,18 @@ elif page == "📊 Activity Classifier":
         with prob_col:
             st.markdown("""<div class="section-card"><h3 style="margin-top:0;">📊 Prediction Confidence</h3></div>""",
                         unsafe_allow_html=True)
-            fig, ax = dark_fig(figsize=(8, 7))
-            act_names = [UCI_HAR_LABELS[i] for i in range(6)]
-            colors = [PALETTE["success"] if i == pred_idx else PALETTE["accent"] for i in range(6)]
-            ax.barh(range(6), probs * 100, color=colors, alpha=0.85, height=0.6,
+            fig, ax = dark_fig(figsize=(8, max(4, n_classes * 0.35)))
+            act_names = [label_map.get(i, f"Class {i}") for i in range(n_classes)]
+            colors = [PALETTE["success"] if i == pred_idx else PALETTE["accent"] for i in range(n_classes)]
+            ax.barh(range(n_classes), probs * 100, color=colors, alpha=0.85, height=0.6,
                     edgecolor=PALETTE["bg_dark"])
-            ax.set_yticks(range(6))
-            ax.set_yticklabels(act_names, fontsize=10)
+            ax.set_yticks(range(n_classes))
+            ax.set_yticklabels(act_names, fontsize=9)
             ax.set_xlabel("Confidence (%)", fontsize=10)
             ax.set_title("Model Prediction Probabilities", fontsize=12, fontweight="bold")
-            ax.set_xlim(0, 105)
+            ax.set_xlim(0, 115)
             for i, p in enumerate(probs):
-                ax.text(p * 100 + 1, i, f"{p*100:.1f}%", va="center", fontsize=9,
+                ax.text(p * 100 + 1, i, f"{p*100:.1f}%", va="center", fontsize=8,
                         color=PALETTE["text_muted"])
             ax.invert_yaxis()
             plt.tight_layout()

@@ -1,3 +1,4 @@
+import os
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -139,10 +140,16 @@ def finetune_shar(data_dir, encoder_path="shar_encoder_pretrained.pth", label_ra
     # For UCI HAR, classes are 0-5.
     
     plt.tight_layout()
+    os.makedirs("results", exist_ok=True)
     plt.savefig("results/confusion_matrix_wisdm.png")
-    print("Saved classification heatmap to 'results/confusion_matrix.png'.")
+    print("Saved classification heatmap to 'results/confusion_matrix_wisdm.png'.")
     plt.close()
-    
+
+    # Save the fine-tuned classifier (encoder + head) for downstream inference
+    os.makedirs("models", exist_ok=True)
+    torch.save(model.state_dict(), "models/shar_classifier_finetuned_wisdm.pth")
+    print("Saved fine-tuned classifier to 'models/shar_classifier_finetuned_wisdm.pth'.")
+
     return model
 
 if __name__ == "__main__":

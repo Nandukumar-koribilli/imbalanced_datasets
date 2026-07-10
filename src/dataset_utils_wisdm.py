@@ -106,9 +106,8 @@ def get_dataloaders(data_dir, batch_size=128):
     return train_loader, test_loader, train_dataset, test_dataset
 
 if __name__ == '__main__':
-    # Test path pointing to the raw phone accel data
-    # Windows path style
-    data_dir = r"c:\Users\Govin\Downloads\maam project\wisdm-dataset\wisdm-dataset\wisdm-dataset\raw\phone\accel"
+    # Path pointing to the raw phone accel data (relative to project root)
+    data_dir = os.path.join("wisdm-dataset", "raw", "phone", "accel")
     train_loader, test_loader, train_dataset, test_dataset = get_dataloaders(data_dir)
     for X, y in train_loader:
         print(f"Batch X shape: {X.shape}")

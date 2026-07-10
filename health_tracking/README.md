@@ -29,8 +29,12 @@ source ../.venv/bin/activate
 If you haven't already installed the required packages in the root project, make sure they are installed:
 
 ```bash
-pip install streamlit pandas numpy matplotlib seaborn torch torchvision scikit-learn
+pip install streamlit numpy scipy matplotlib seaborn torch torchvision scikit-learn pandas
 ```
+
+> **Note:** If PyTorch is not installed (or fails to load on your machine), the dashboard
+> still runs fully — all health-metric pages use simulated sensor data. Only the
+> **Live Activity Classifier** page is disabled, with an explanatory message.
 
 ### 3. Run the Dashboard
 Use `streamlit` to launch the application:
@@ -44,5 +48,17 @@ This will spin up a local server. You can view the dashboard by opening the Loca
 ## Note on Live Classification
 To use the **"Live Activity Classifier"** page in the dashboard:
 1. You must have trained the SHAR model first by running `python main.py` in the root directory.
-2. The model weights (`shar_encoder_pretrained.pth`) must be present in the `models/` directory in the root project.
+   This saves both the pretrained encoder (`models/shar_encoder_pretrained.pth`) and the
+   **fine-tuned classifier** (`models/shar_classifier_finetuned.pth`).
+2. The dashboard prefers the fine-tuned checkpoint. If only the pretrained encoder is found,
+   it will warn you that the classifier head is untrained and predictions are unreliable.
 3. The raw `UCI HAR Dataset` folder must also be present in the root project so the app can sample test data.
+
+## How the Metrics Are Computed
+* **Calories** — MET-based (`1 MET ≈ 1 kcal/kg/h`); the daily total already includes resting
+  expenditure, and *Active kcal* is the burn above the 1-MET baseline (no BMR double-counting).
+* **Steps** — estimated from the activity timeline using typical cadences per ambulatory activity.
+* **Sedentary time** — standard MET cut-points (≤ 1.5 MET while awake); sleep is excluded.
+* **Sleep stages** — the movement signal is classified window-by-window with the same
+  threshold algorithm shown on the chart; the Dashboard and Sleep pages share one simulated night.
+* **Fall detection** — all three phases are checked: free-fall → impact → post-impact immobility.

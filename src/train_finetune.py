@@ -1,3 +1,4 @@
+import os
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -46,7 +47,7 @@ def finetune_shar(data_dir, encoder_path="shar_encoder_pretrained.pth", label_ra
     # 3. Load Pretrained Encoder and Initialize Classifier
     seq_len = X_tensor.shape[2]
     in_channels = X_tensor.shape[1]
-    num_classes = len(np.unique(y_test)) if 'y_test' in locals() else 6 # 6 classes for UCI
+    num_classes = len(np.unique(y_train))  # 6 classes for UCI HAR
     
     # Needs the dummy projector to load the encoder properly 
     dummy_pretrain = SHAR_Pretrain(in_channels=in_channels, seq_len=seq_len).to(device)
@@ -138,10 +139,17 @@ def finetune_shar(data_dir, encoder_path="shar_encoder_pretrained.pth", label_ra
     # For UCI HAR, classes are 0-5.
     
     plt.tight_layout()
+    os.makedirs("results", exist_ok=True)
     plt.savefig("results/confusion_matrix.png")
     print("Saved classification heatmap to 'results/confusion_matrix.png'.")
     plt.close()
-    
+
+    # Save the fine-tuned classifier (encoder + head) so downstream apps
+    # (e.g. the health-tracking dashboard) can run real inference with it.
+    os.makedirs("models", exist_ok=True)
+    torch.save(model.state_dict(), "models/shar_classifier_finetuned.pth")
+    print("Saved fine-tuned classifier to 'models/shar_classifier_finetuned.pth'.")
+
     return model
 
 if __name__ == "__main__":

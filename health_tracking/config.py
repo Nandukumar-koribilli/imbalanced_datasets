@@ -33,6 +33,17 @@ MET_VALUES = {
     "Folding":            2.0,
 }
 
+# ─── Typical Step Cadence (steps/min) ─────────────────────────────────────────
+# Used to estimate daily step counts from the activity timeline.
+# Activities not listed here contribute zero steps.
+STEP_CADENCE = {
+    "Walking":            100,
+    "Walking Upstairs":    75,
+    "Walking Downstairs":  85,
+    "Jogging":            160,
+    "Stairs":              75,
+}
+
 # ─── Default User Demographics ─────────────────────────────────────────────────
 DEFAULT_WEIGHT_KG   = 70.0
 DEFAULT_HEIGHT_CM   = 170.0
