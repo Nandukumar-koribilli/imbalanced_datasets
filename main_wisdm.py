@@ -1,6 +1,7 @@
 import argparse
 import torch
 import os
+import numpy as np
 from src.train_pretrain_wisdm import pretrain_shar
 from src.train_finetune_wisdm import finetune_shar
 
@@ -12,8 +13,15 @@ def main():
     parser.add_argument('--batch_size', type=int, default=128, help='Batch size')
     parser.add_argument('--lr', type=float, default=0.002, help='Learning rate')
     parser.add_argument('--label_ratio', type=float, default=0.25, help='Percentage of labels used in fine-tuning phase')
+    parser.add_argument('--max_pretrain_samples', type=int, default=15000,
+                        help='Cap the pretraining set size for faster CPU runs '
+                             '(WISDM has ~45k windows; pass 0 to use all)')
     args = parser.parse_args()
-    
+
+    # Reproducibility
+    np.random.seed(42)
+    torch.manual_seed(42)
+
     device = 'cpu' # Forced CPU as requested
     print(f"===========================================================")
     print(f"                    SHAR Pipeline Start                    ")
@@ -35,7 +43,8 @@ def main():
         epochs=args.pretrain_epochs,
         batch_size=args.batch_size,
         lr=args.lr,
-        device=device
+        device=device,
+        max_pretrain_samples=args.max_pretrain_samples or None
     )
     
     # Phase 2: Supervised Fine-Tuning

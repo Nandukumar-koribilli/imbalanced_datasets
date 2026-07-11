@@ -105,25 +105,27 @@ UCI_HAR_LABELS = {
     5: "Laying",
 }
 
+# Letter codes ordered as sklearn's LabelEncoder sorts them (A..S, no N).
+# Names follow the official wisdm-dataset/activity_key.txt.
 WISDM_LABELS = {
-    0:  "Walking",       # A
-    1:  "Jogging",       # B
-    2:  "Stairs",        # C
-    3:  "Sitting",       # D
-    4:  "Standing",      # E
-    5:  "Kicking",       # F
-    6:  "Dribbling",     # G
-    7:  "Playing Catch", # H
-    8:  "Typing",        # I
-    9:  "Writing",       # J
-    10: "Clapping",      # K
-    11: "Folding",       # L
-    12: "Brushing Teeth",# M
-    13: "Eating Soup",   # O
-    14: "Eating Chips",  # P
-    15: "Eating Pasta",  # Q
-    16: "Eating Sandwich",# R
-    17: "Drinking",      # S
+    0:  "Walking",        # A
+    1:  "Jogging",        # B
+    2:  "Stairs",         # C
+    3:  "Sitting",        # D
+    4:  "Standing",       # E
+    5:  "Typing",         # F
+    6:  "Brushing Teeth", # G
+    7:  "Eating Soup",    # H
+    8:  "Eating Chips",   # I
+    9:  "Eating Pasta",   # J
+    10: "Drinking",       # K
+    11: "Eating Sandwich",# L
+    12: "Kicking",        # M
+    13: "Playing Catch",  # O
+    14: "Dribbling",      # P
+    15: "Writing",        # Q
+    16: "Clapping",       # R
+    17: "Folding",        # S
 }
 
 # ─── Activity Categories (for colour-coding & grouping) ───────────────────────

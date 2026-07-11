@@ -1,10 +1,14 @@
 import argparse
 import torch
 import os
+import numpy as np
 from src.train_pretrain import pretrain_shar
 from src.train_finetune import finetune_shar
 
 def main():
+    # Reproducibility: fixed seeds for numpy (iSMOTE) and torch (training)
+    np.random.seed(42)
+    torch.manual_seed(42)
     parser = argparse.ArgumentParser(description="SHAR: Self-Supervised Learning for Activity Recognition")
     parser.add_argument('--data_dir', type=str, default='UCI HAR Dataset', help='Directory for datasets')
     parser.add_argument('--pretrain_epochs', type=int, default=50, help='Number of epochs for pre-training (self-supervised)')
@@ -12,6 +16,8 @@ def main():
     parser.add_argument('--batch_size', type=int, default=128, help='Batch size')
     parser.add_argument('--lr', type=float, default=0.002, help='Learning rate')
     parser.add_argument('--label_ratio', type=float, default=0.25, help='Percentage of labels used in fine-tuning phase')
+    parser.add_argument('--max_pretrain_samples', type=int, default=None,
+                        help='Cap the pretraining set size for faster CPU runs (default: use all)')
     args = parser.parse_args()
     
     device = 'cpu' # Forced CPU as requested
@@ -35,7 +41,8 @@ def main():
         epochs=args.pretrain_epochs,
         batch_size=args.batch_size,
         lr=args.lr,
-        device=device
+        device=device,
+        max_pretrain_samples=args.max_pretrain_samples
     )
     
     # Phase 2: Supervised Fine-Tuning

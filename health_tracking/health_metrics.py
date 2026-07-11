@@ -267,6 +267,44 @@ def simulate_heart_rate(activity: str, duration_samples: int = 128,
     return np.clip(hr, 40, 200)
 
 
+def infer_activity_from_hr(bpm: float, activities: list = None) -> dict:
+    """
+    Inverse lookup: given a heart rate in BPM, rank activities by how
+    plausible they are at that heart rate.
+
+    Each activity's HR zone (lo, hi) is treated as a gaussian centred on the
+    zone midpoint with sigma = half the zone width; scores are normalised so
+    the best match is 1.0.
+
+    Returns {"zone": str, "ranked": [(activity, score), ...]} where zone is
+    one of rest/light/moderate/vigorous, or "below rest" / "above vigorous"
+    for out-of-range values.
+    """
+    if activities is None:
+        activities = list(ACTIVITY_HR_ZONE.keys())
+
+    zone = None
+    for z, (lo, hi) in HR_PROFILES.items():
+        if lo <= bpm <= hi:
+            zone = z
+            break
+    if zone is None:
+        zone = "below rest" if bpm < HR_PROFILES["rest"][0] else "above vigorous"
+
+    ranked = []
+    for act in activities:
+        lo, hi = HR_PROFILES[ACTIVITY_HR_ZONE.get(act, "rest")]
+        mid = (lo + hi) / 2.0
+        sigma = max((hi - lo) / 2.0, 1.0)
+        score = float(np.exp(-((bpm - mid) ** 2) / (2 * sigma ** 2)))
+        ranked.append((act, score))
+    ranked.sort(key=lambda t: -t[1])
+    if ranked and ranked[0][1] > 0:
+        best = ranked[0][1]
+        ranked = [(a, s / best) for a, s in ranked]
+    return {"zone": zone, "ranked": ranked}
+
+
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 #  Stress / HRV
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

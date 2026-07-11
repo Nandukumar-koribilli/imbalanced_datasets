@@ -1,4 +1,6 @@
 import os
+import json
+import time
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -7,6 +9,15 @@ import numpy as np
 from sklearn.metrics import classification_report, f1_score, confusion_matrix
 import matplotlib.pyplot as plt
 import seaborn as sns
+
+# Ordered as sklearn's LabelEncoder sorts the letter codes (A..S, no N),
+# with names from the official wisdm-dataset/activity_key.txt.
+WISDM_CLASS_NAMES = [
+    "Walking", "Jogging", "Stairs", "Sitting", "Standing", "Typing",
+    "Brushing Teeth", "Eating Soup", "Eating Chips", "Eating Pasta",
+    "Drinking", "Eating Sandwich", "Kicking", "Playing Catch", "Dribbling",
+    "Writing", "Clapping", "Folding",
+]
 
 from .dataset_utils_wisdm import get_dataloaders
 from .shar_model import SHAR_Pretrain, SHAR_Classifier, SHAREncoder
@@ -127,6 +138,31 @@ def finetune_shar(data_dir, encoder_path="shar_encoder_pretrained.pth", label_ra
     print(classification_report(all_targets, all_preds))
     f1 = f1_score(all_targets, all_preds, average='macro')
     print(f"Macro F1-Score: {f1:.4f}")
+
+    # Persist metrics so the dashboard and README can show real numbers
+    present = sorted(set(all_targets) | set(all_preds))
+    names = [WISDM_CLASS_NAMES[i] if i < len(WISDM_CLASS_NAMES) else f"Class {i}"
+             for i in present]
+    report = classification_report(all_targets, all_preds, labels=present,
+                                   target_names=names, output_dict=True)
+    metrics = {
+        "dataset": "WISDM",
+        "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "label_ratio": label_ratio,
+        "epochs": epochs,
+        "test_accuracy": round(test_acc, 2),
+        "macro_f1": round(float(f1), 4),
+        "per_class": {name: {"precision": round(v["precision"], 4),
+                              "recall": round(v["recall"], 4),
+                              "f1": round(v["f1-score"], 4),
+                              "support": int(v["support"])}
+                      for name, v in report.items()
+                      if isinstance(v, dict) and "f1-score" in v and name not in ("macro avg", "weighted avg")},
+    }
+    os.makedirs("results", exist_ok=True)
+    with open("results/metrics_wisdm.json", "w") as f:
+        json.dump(metrics, f, indent=2)
+    print("Saved metrics to 'results/metrics_wisdm.json'.")
     
     # --- Confusion Matrix Plot ---
     cm = confusion_matrix(all_targets, all_preds)

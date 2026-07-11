@@ -2,12 +2,14 @@
 
 This folder contains a premium, dark-themed Health Monitoring Dashboard powered by the **SHAR (Self-Supervised HAR)** activity recognition engine.
 
-The dashboard provides real-time health insights, including:
-* **Calories & Steps:** Estimates daily energy expenditure using MET values and simulates step counting.
-* **Sleep Analysis:** Classifies sleep stages (Deep, Light, REM) and generates a sleep score based on accelerometer movement patterns.
-* **Fall Detection:** Uses threshold-based detection (free-fall vs impact) to simulate and detect falls.
-* **Heart & Stress:** Simulates physiological metrics (Heart Rate Variability, Stress Level, average Heart Rate) across different activity zones.
-* **Live Activity Classifier:** Runs live classifications using the pre-trained SHAR model from the main project.
+The app is a **two-step workflow**: Step 1 (dataset selection + iSMOTE balancing, with before/after charts and a PDF report export) unlocks Step 2 (the health dashboards, all scoped to the selected dataset):
+
+* **Dashboard:** Daily overview — calories, steps, HR, sleep score, 24-hour activity timeline.
+* **Calories & Steps:** MET-based energy expenditure and peak-detection step counting.
+* **Sleep Analysis:** Classifies sleep stages (Deep, Light, REM) from accelerometer movement and scores the night.
+* **Fall Detection:** Three-phase detection — free-fall → impact → post-impact immobility.
+* **Heart & Stress:** Simulated HR / HRV / stress across activity zones, plus a **"What Am I Doing?"** reverse lookup — type a heart rate and it names the most likely activity, the HR zone, and ranks all of the selected dataset's activities by likelihood.
+* **Live Activity Classifier:** Per-sample inference with confidence bars, real test-set metrics from `results/metrics.json`, and the t-SNE embedding figure.
 
 ## Setup & Running Instructions
 

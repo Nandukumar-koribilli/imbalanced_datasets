@@ -1,6 +1,10 @@
 # SHAR — Self-Supervised HAR + Health Tracking Dashboard
 
+[![CI](https://github.com/Nandukumar-koribilli/imbalanced_datasets/actions/workflows/ci.yml/badge.svg)](https://github.com/Nandukumar-koribilli/imbalanced_datasets/actions/workflows/ci.yml)
+
 PyTorch implementation of **Self-Supervised Learning for Activity Recognition Based on Datasets With Imbalanced Classes** (SHAR), plus a **Health Tracking Dashboard** that turns the activity-recognition engine into practical health insights: calories, steps, sleep staging, fall detection, and heart-rate/stress monitoring.
+
+![Architecture](docs/architecture.png)
 
 ---
 
@@ -8,7 +12,7 @@ PyTorch implementation of **Self-Supervised Learning for Activity Recognition Ba
 
 ```powershell
 # 1. Install dependencies
-pip install torch torchvision numpy scipy pandas scikit-learn matplotlib seaborn streamlit
+pip install -r requirements.txt
 
 # 2. Launch the Health Tracking Dashboard (works out of the box)
 python -m streamlit run health_tracking/app.py
@@ -107,7 +111,11 @@ Open <http://localhost:8501>. The dashboard is a **two-step workflow**:
 4. When it finishes you get: a green "Balancing finished for the *{dataset}* dataset" banner, side-by-side **before / after** distribution charts, per-class breakdown table, and a peek at a raw signal window from the selected dataset.
 
 **📊 Step 2 — Dashboard** (unlocked after balancing)
-The five health pages (Dashboard, Calories & Steps, Sleep Analysis, Fall Detection, Heart & Stress) plus the Live Activity Classifier become available in the sidebar. **All of them are scoped to the dataset you selected in Step 1** — activity dropdowns list only that dataset's activities, the timeline substitutes any missing labels, and the classifier loads that dataset's test split and checkpoint. Every dashboard page shows a "📦 Working on dataset: *X*" banner so you always know which dataset the numbers refer to.
+The health pages (Dashboard, Calories & Steps, Sleep Analysis, Fall Detection, Heart & Stress) plus the Live Activity Classifier become available in the sidebar. **All of them are scoped to the dataset you selected in Step 1** — activity dropdowns list only that dataset's activities, the timeline substitutes any missing labels, and the classifier loads that dataset's test split and checkpoint. Every dashboard page shows a "📦 Working on dataset: *X*" banner so you always know which dataset the numbers refer to.
+
+Highlights once a model is trained:
+* **📊 Activity Classifier** — shows the trained model's real test accuracy / macro-F1 / per-class F1 (from `results/metrics.json`), the t-SNE "what self-supervision learned" figure, and per-sample live inference with confidence bars.
+* **📄 Export Report** — Step 1 offers a downloadable PDF (balancing summary + charts + test metrics) to hand to reviewers.
 
 You can go back to Step 1 at any time to switch datasets — the balancing state resets and the dashboard re-locks until you rebalance.
 
@@ -155,12 +163,54 @@ Explore raw sensor signals, visualize the iSMOTE balancing, and run live classif
 4. **Contrastive Pre-training** — NT-Xent loss on two randomly-masked views of each sample builds representations that transfer with very little labelled data.
 5. **Health Tracking Application** — MET-based calorie estimation, cadence-based step counting, threshold-based Deep/Light/REM sleep staging, three-phase fall detection (free-fall → impact → immobility), and simulated HR/HRV stress analysis, all driven by the recognized activity.
 
-## Example Output on UCI HAR
+## Reproducing the Research Results
 
-Running the complete pipeline with `--label_ratio 0.25` yields approximately **85–87 % accuracy** and **84–87 % macro F1** — proving the self-supervised representations generalise well on minority classes (walking upstairs/downstairs) using only a quarter of the available labels.
+```powershell
+# End-to-end training (saves checkpoints, figures and results/metrics.json)
+python main.py --pretrain_epochs 50 --finetune_epochs 50 --label_ratio 0.25
+
+# Ablation study: supervised-from-scratch vs SSL vs SSL+iSMOTE,
+# across label ratios (1/5/10/25 %) with 3 seeds and error bars
+python scripts/run_ablations.py                # full study (hours on CPU)
+python scripts/run_ablations.py --quick        # smoke test in minutes
+
+# "What did self-supervision learn" figure — t-SNE of encoder embeddings
+# before vs after label-free pre-training
+python scripts/plot_embeddings.py
+
+# Architecture diagram (docs/architecture.png)
+python scripts/make_architecture_diagram.py
+```
+
+Outputs land in `results/`: `metrics.json` (test accuracy, macro F1, per-class report), `ablations.json` / `ablations.png` / `ablations.md` (README-ready table with mean ± std over seeds), `embedding_tsne.png`, `ismote_distribution.png`, `confusion_matrix.png`.
+
+## Results on UCI HAR
+
+Running the complete pipeline (`--pretrain_epochs 50 --finetune_epochs 50 --label_ratio 0.25`) achieves **87.3 % test accuracy** and **0.873 macro F1** using only a quarter of the training labels:
+
+| Class | Precision | Recall | F1 |
+|---|---|---|---|
+| Walking | 0.943 | 0.871 | 0.906 |
+| Walking Upstairs | 0.887 | 0.866 | 0.877 |
+| Walking Downstairs | 0.858 | 0.962 | **0.907** |
+| Sitting | 0.741 | 0.811 | 0.774 |
+| Standing | 0.860 | 0.788 | 0.822 |
+| Laying | 0.957 | 0.952 | 0.954 |
+
+Note the minority classes (Walking Upstairs / Downstairs — the smallest classes in the training set) reach F1 ≥ 0.88, on par with the majority classes: this is the iSMOTE balancing doing its job. Per-run numbers are saved to `results/metrics.json` and shown inside the dashboard's Activity Classifier page.
 
 ![iSMOTE Graph](results/ismote_distribution.png)
 ![Confusion Matrix Heatmap](results/confusion_matrix.png)
+![Encoder embeddings](results/embedding_tsne.png)
+
+## Testing
+
+```powershell
+pip install pytest
+python -m pytest tests/ -v
+```
+
+25+ unit tests cover the health-metrics engine (calorie math, step detection, sleep staging, three-phase fall detection), the iSMOTE algorithm (balancing, original preservation, cluster containment of synthetics), and the model architecture (output shapes for both datasets, checkpoint loading, random-masking behaviour). The same suite runs in GitHub Actions on every push — torch-dependent tests skip automatically where torch is unavailable.
 
 ---
 

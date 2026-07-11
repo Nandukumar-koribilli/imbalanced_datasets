@@ -1,4 +1,6 @@
 import os
+import json
+import time
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -126,6 +128,30 @@ def finetune_shar(data_dir, encoder_path="shar_encoder_pretrained.pth", label_ra
     print(classification_report(all_targets, all_preds))
     f1 = f1_score(all_targets, all_preds, average='macro')
     print(f"Macro F1-Score: {f1:.4f}")
+
+    # Persist metrics so the dashboard and README can show real numbers
+    class_names = ["Walking", "Walking Upstairs", "Walking Downstairs",
+                   "Sitting", "Standing", "Laying"]
+    report = classification_report(all_targets, all_preds, output_dict=True,
+                                   target_names=class_names[:num_classes])
+    metrics = {
+        "dataset": "UCI HAR",
+        "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "label_ratio": label_ratio,
+        "epochs": epochs,
+        "test_accuracy": round(test_acc, 2),
+        "macro_f1": round(float(f1), 4),
+        "per_class": {name: {"precision": round(v["precision"], 4),
+                              "recall": round(v["recall"], 4),
+                              "f1": round(v["f1-score"], 4),
+                              "support": int(v["support"])}
+                      for name, v in report.items()
+                      if isinstance(v, dict) and "f1-score" in v and name not in ("macro avg", "weighted avg")},
+    }
+    os.makedirs("results", exist_ok=True)
+    with open("results/metrics.json", "w") as f:
+        json.dump(metrics, f, indent=2)
+    print("Saved metrics to 'results/metrics.json'.")
     
     # --- Confusion Matrix Plot ---
     cm = confusion_matrix(all_targets, all_preds)

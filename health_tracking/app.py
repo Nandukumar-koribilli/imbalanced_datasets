@@ -12,7 +12,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib
 matplotlib.use("Agg")
-import sys, os
+import sys, os, io, json, time
 
 # ── Ensure parent project is importable ──────────────────────────────────────
 PARENT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -29,7 +29,7 @@ from health_metrics import (
     compute_bmr, calories_burned, compute_daily_calories, active_calories,
     count_steps, estimate_steps_from_timeline, sedentary_ratio,
     simulate_sleep_night, detect_fall, simulate_heart_rate, simulate_hrv,
-    generate_daily_timeline,
+    infer_activity_from_hr, generate_daily_timeline,
 )
 
 # ── Try to load the SHAR model from the parent project ──────────────────────
@@ -61,6 +61,7 @@ DATASETS = {
         "in_channels": 9,
         "num_classes": 6,
         "seq_len": 128,
+        "window_sec": 2.56,   # 128 samples @ 50 Hz
         "classifier_ckpt": "shar_classifier_finetuned.pth",
         "encoder_ckpt":    "shar_encoder_pretrained.pth",
         "channel_names": ["body_acc_x","body_acc_y","body_acc_z",
@@ -74,6 +75,7 @@ DATASETS = {
         "in_channels": 3,
         "num_classes": 18,
         "seq_len": 128,
+        "window_sec": 6.4,    # 128 samples @ 20 Hz
         "classifier_ckpt": "shar_classifier_finetuned_wisdm.pth",
         "encoder_ckpt":    "shar_encoder_pretrained_wisdm.pth",
         "channel_names": ["accel_x","accel_y","accel_z"],
@@ -116,6 +118,21 @@ for k, v in {
 def activities_for(dataset_name):
     """Return the list of activity strings for the selected dataset."""
     return list(DATASETS[dataset_name]["labels"].values())
+
+
+def load_metrics_for(dataset_name):
+    """Return the saved training metrics dict for *dataset_name*, or None."""
+    for fname in ("metrics.json", "metrics_wisdm.json"):
+        path = os.path.join(PARENT_DIR, "results", fname)
+        if os.path.exists(path):
+            try:
+                with open(path) as fh:
+                    m = json.load(fh)
+                if m.get("dataset") == dataset_name:
+                    return m
+            except Exception:
+                continue
+    return None
 
 
 @st.cache_data(show_spinner=False)
@@ -414,14 +431,14 @@ with st.sidebar:
         page = "🗂️ Dataset & Balancing"
 
     st.markdown("---")
-    st.markdown("##### 👤 Your Profile")
-    user_weight = st.number_input("Weight (kg)", 30.0, 200.0, DEFAULT_WEIGHT_KG, 0.5)
-    user_height = st.number_input("Height (cm)", 100.0, 250.0, DEFAULT_HEIGHT_CM, 0.5)
-    user_age    = st.number_input("Age", 10, 100, DEFAULT_AGE)
-    user_gender = st.selectbox("Gender", ["Male", "Female"])
-
-    st.markdown("---")
     st.caption("Powered by SHAR Encoder  •  Self-Supervised Learning")
+
+# Fixed demo profile (the sidebar profile inputs were removed) — all calorie,
+# BMR and health computations use these defaults from config.py
+user_weight = DEFAULT_WEIGHT_KG
+user_height = DEFAULT_HEIGHT_CM
+user_age    = DEFAULT_AGE
+user_gender = DEFAULT_GENDER
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -720,6 +737,79 @@ if page == "🗂️ Dataset & Balancing":
             st.pyplot(fig)
             plt.close(fig)
 
+        # ── Downloadable PDF report ───────────────────────────────────────────
+        st.markdown("<br>", unsafe_allow_html=True)
+        st.markdown("""<div class="section-card"><h3 style="margin-top:0;">📄 Export Report</h3></div>""",
+                    unsafe_allow_html=True)
+
+        def build_pdf_report():
+            from matplotlib.backends.backend_pdf import PdfPages
+            buf = io.BytesIO()
+            with PdfPages(buf) as pdf:
+                # Page 1 — summary
+                fig = plt.figure(figsize=(8.27, 11.69))  # A4
+                fig.text(0.5, 0.92, "SHAR — Dataset Balancing Report",
+                         ha="center", fontsize=20, fontweight="bold")
+                lines = [
+                    f"Dataset:              {ds_name}",
+                    f"Generated:            {time.strftime('%Y-%m-%d %H:%M')}",
+                    "",
+                    f"Full training set:    {sum(full_orig.values()):,} windows",
+                    f"Working set:          {sum(o_vals):,} windows",
+                    f"Synthetic generated:  {sum(synth):,} (iSMOTE, KNN-validated)",
+                    f"Total after iSMOTE:   {sum(b_vals):,} windows",
+                    f"Imbalance ratio:      {max(o_vals)/max(1,min(o_vals)):.2f}x  ->  1.00x",
+                    "",
+                    "Method: iSMOTE interpolates each minority sample toward one of",
+                    "its k nearest same-class neighbours, then accepts the synthetic",
+                    "sample only if its k nearest neighbours in the ENTIRE dataset",
+                    "share its class — rejecting overlapping / noisy candidates.",
+                ]
+                fig.text(0.1, 0.82, "\n".join(lines), fontsize=11, va="top",
+                         family="monospace")
+                pdf.savefig(fig); plt.close(fig)
+
+                # Page 2 — before / after distributions
+                fig, (a1, a2) = plt.subplots(1, 2, figsize=(11.69, 5.5))
+                a1.bar(names, o_vals, color="#d64545")
+                a1.set_title("Before iSMOTE (imbalanced)")
+                a2.bar(names, o_vals, color="#6366f1", label="Original")
+                a2.bar(names, synth, bottom=o_vals, color="#22a55e", label="Synthetic")
+                a2.set_title("After iSMOTE (balanced)")
+                a2.legend()
+                for a in (a1, a2):
+                    a.tick_params(axis="x", rotation=45)
+                    for lb in a.get_xticklabels():
+                        lb.set_ha("right")
+                plt.tight_layout()
+                pdf.savefig(fig); plt.close(fig)
+
+                # Page 3 — trained-model metrics, when available for this dataset
+                m = load_metrics_for(ds_name)
+                if m:
+                    fig = plt.figure(figsize=(8.27, 11.69))
+                    fig.text(0.5, 0.92, "Trained Model — Test Set Results",
+                             ha="center", fontsize=18, fontweight="bold")
+                    rows = [f"Test accuracy:  {m['test_accuracy']}%",
+                            f"Macro F1:       {m['macro_f1']}",
+                            f"Label ratio:    {int(m['label_ratio']*100)}%", ""]
+                    rows.append(f"{'Class':22s} {'Prec':>6s} {'Rec':>6s} {'F1':>6s}")
+                    for cname, v in m.get("per_class", {}).items():
+                        rows.append(f"{cname:22s} {v['precision']:6.3f} "
+                                    f"{v['recall']:6.3f} {v['f1']:6.3f}")
+                    fig.text(0.1, 0.82, "\n".join(rows), fontsize=11, va="top",
+                             family="monospace")
+                    pdf.savefig(fig); plt.close(fig)
+            buf.seek(0)
+            return buf.getvalue()
+
+        st.download_button(
+            "📄 Download balancing report (PDF)",
+            data=build_pdf_report(),
+            file_name=f"shar_report_{ds_name.replace(' ', '_').lower()}.pdf",
+            mime="application/pdf",
+        )
+
     # Don't fall through to any other page
     st.stop()
 
@@ -908,6 +998,7 @@ if page == "🏠 Dashboard":
             24-hour average HR: <b>{avg_hr} bpm</b> — healthy range.
         </div>
         """, unsafe_allow_html=True)
+
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -1323,6 +1414,65 @@ elif page == "💓 Heart & Stress":
     </p>
     """, unsafe_allow_html=True)
 
+    # ── Reverse lookup: type a heart rate → what is this person doing? ──────
+    st.markdown("""<div class="section-card"><h3 style="margin-top:0;">🔍 What Am I Doing? — Activity from Heart Rate</h3></div>""",
+                unsafe_allow_html=True)
+
+    zone_style = {
+        "rest":           ("🟢 Rest zone",      PALETTE["success"],
+                           "Recovery & restoration — the body is at ease."),
+        "light":          ("🔵 Light zone",     PALETTE["accent_light"],
+                           "Gentle movement — fat-burning range."),
+        "moderate":       ("🟡 Moderate zone",  PALETTE["warning"],
+                           "Cardio range — breathing harder but sustainable."),
+        "vigorous":       ("🔴 Vigorous zone",  PALETTE["danger"],
+                           "High intensity — VO₂-max / endurance training."),
+        "below rest":     ("💤 Below resting",  PALETTE["accent"],
+                           "Very low — deep sleep, or an athlete's resting HR. "
+                           "If you feel unwell at this HR, talk to a doctor."),
+        "above vigorous": ("🚨 Above vigorous", PALETTE["danger"],
+                           "Near-maximal effort — sprinting/HIIT. Not sustainable "
+                           "for long; slow down if this isn't intentional."),
+    }
+
+    in_col, res_col = st.columns([1, 2])
+    with in_col:
+        bpm_in = st.number_input("Enter a heart rate (bpm)", 40, 220, 95, 1,
+                                 help="e.g. from your smartwatch or a manual pulse check")
+        guess = infer_activity_from_hr(
+            bpm_in, activities_for(st.session_state.selected_dataset))
+        z_label, z_color, z_desc = zone_style[guess["zone"]]
+        top_name = guess["ranked"][0][0] if guess["ranked"] else "—"
+        st.markdown(f"""
+        <div class="metric-card" style="border:2px solid {z_color};">
+            <div class="metric-icon">💓</div>
+            <div class="metric-value" style="background:none; -webkit-text-fill-color:{z_color}; font-size:1.5rem;">{top_name}</div>
+            <div class="metric-label">most likely activity @ {bpm_in} bpm</div>
+            <p style="color:{z_color} !important; font-weight:700; margin:0.6rem 0 0.2rem 0;">{z_label}</p>
+            <p style="color:{PALETTE['text_muted']} !important; font-size:0.78rem; margin:0;">{z_desc}</p>
+        </div>
+        """, unsafe_allow_html=True)
+
+    with res_col:
+        top_n = guess["ranked"][:8]
+        fig, ax = dark_fig(figsize=(8, max(2.8, len(top_n) * 0.45)))
+        names = [a for a, _ in top_n]
+        scores = [s * 100 for _, s in top_n]
+        bar_cols = [z_color if i == 0 else PALETTE["accent"] for i in range(len(top_n))]
+        ax.barh(names, scores, color=bar_cols, alpha=0.85, edgecolor=PALETTE["bg_dark"])
+        ax.set_xlim(0, 112)
+        ax.set_xlabel("Likelihood (relative %)", fontsize=9)
+        ax.set_title(f"Which activities match {bpm_in} bpm?", fontsize=11, fontweight="bold")
+        for i, s in enumerate(scores):
+            ax.text(s + 1.5, i, f"{s:.0f}%", va="center", fontsize=8,
+                    color=PALETTE["text_muted"])
+        ax.invert_yaxis()
+        plt.tight_layout()
+        st.pyplot(fig)
+        plt.close(fig)
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
     # ── Activity selector ──
     selected_act = st.selectbox("Select an activity to simulate:",
                                  activities_for(st.session_state.selected_dataset))
@@ -1468,6 +1618,56 @@ elif page == "📊 Activity Classifier":
         Real-time activity prediction using the SHAR encoder on <b>{ds_name}</b> test data
     </p>
     """, unsafe_allow_html=True)
+
+    # ── Real training metrics (written by main.py / main_wisdm.py) ──────────
+    train_metrics = load_metrics_for(ds_name)
+
+    if train_metrics:
+        st.markdown("""<div class="section-card"><h3 style="margin-top:0;">🎓 Trained Model Performance (real test-set numbers)</h3></div>""",
+                    unsafe_allow_html=True)
+        mc1, mc2, mc3 = st.columns(3)
+        for c, (icon, val, lbl) in zip((mc1, mc2, mc3), [
+            ("🎯", f"{train_metrics['test_accuracy']}%", "Test Accuracy"),
+            ("🏅", f"{train_metrics['macro_f1']:.3f}", "Macro F1"),
+            ("🏷️", f"{int(train_metrics['label_ratio']*100)}%", "Labels used in training"),
+        ]):
+            with c:
+                st.markdown(f"""
+                <div class="metric-card">
+                    <div class="metric-icon">{icon}</div>
+                    <div class="metric-value" style="font-size:1.7rem;">{val}</div>
+                    <div class="metric-label">{lbl}</div>
+                </div>
+                """, unsafe_allow_html=True)
+
+        per_class = train_metrics.get("per_class", {})
+        if per_class:
+            fig, ax = dark_fig(figsize=(10, 3.2))
+            names = list(per_class.keys())
+            f1s = [per_class[n]["f1"] for n in names]
+            cols = [PALETTE["success"] if v >= 0.8 else
+                    (PALETTE["warning"] if v >= 0.6 else PALETTE["danger"]) for v in f1s]
+            ax.bar(names, f1s, color=cols, alpha=0.85, edgecolor=PALETTE["bg_dark"])
+            ax.set_ylim(0, 1.05)
+            ax.set_ylabel("F1")
+            ax.set_title("Per-class F1 — minority classes benefit from iSMOTE",
+                         fontsize=11, fontweight="bold")
+            plt.xticks(rotation=30, ha="right", fontsize=8)
+            plt.tight_layout()
+            st.pyplot(fig)
+            plt.close(fig)
+        st.markdown("<br>", unsafe_allow_html=True)
+
+    # ── What the encoder learned (t-SNE embeddings) ──────────────────────────
+    tsne_path = os.path.join(PARENT_DIR, "results", "embedding_tsne.png")
+    if os.path.exists(tsne_path):
+        st.markdown("""<div class="section-card"><h3 style="margin-top:0;">🧠 What Self-Supervision Learned</h3></div>""",
+                    unsafe_allow_html=True)
+        st.image(tsne_path, caption="t-SNE of encoder embeddings: random init (left) vs "
+                 "after label-free contrastive pre-training (right) — clusters form per "
+                 "activity without a single label. Regenerate with "
+                 "`python scripts/plot_embeddings.py`.")
+        st.markdown("<br>", unsafe_allow_html=True)
 
     model, model_status = load_shar_model(ds_name)
     data_dir = ds_info["path"]

@@ -44,15 +44,24 @@ def contrastive_loss(z_i, z_j, temperature=0.5):
     loss = nn.functional.cross_entropy(logits, labels)
     return loss
 
-def pretrain_shar(data_dir, epochs=50, batch_size=128, lr=0.002, device='cpu'):
+def pretrain_shar(data_dir, epochs=50, batch_size=128, lr=0.002, device='cpu',
+                  max_pretrain_samples=None):
     print("--- Starting Pre-training Phase ---")
-    
+
     # 1. Load Original Training Data
     _, _, train_dataset, _ = get_dataloaders(data_dir, batch_size=batch_size)
-    
+
     X_train = train_dataset.X
     y_train = train_dataset.y
     print(f"Original Training Shape: X={X_train.shape}, y={y_train.shape}")
+
+    # Optional cap for CPU-friendly runs: random subsample BEFORE balancing
+    # (proportions are preserved on average, so iSMOTE still sees the imbalance)
+    if max_pretrain_samples is not None and len(y_train) > max_pretrain_samples:
+        keep = np.random.choice(len(y_train), max_pretrain_samples, replace=False)
+        X_train, y_train = X_train[keep], y_train[keep]
+        print(f"Subsampled pretraining set to {len(y_train)} windows "
+              f"(--max_pretrain_samples).")
     
     # 2. Apply iSMOTE to balance the dataset
     print("\nApplying iSMOTE...")
@@ -108,41 +117,44 @@ def pretrain_shar(data_dir, epochs=50, batch_size=128, lr=0.002, device='cpu'):
     optimizer = optim.Adam(model.parameters(), lr=lr)
     
     # 4. Training Loop
+    os.makedirs("models", exist_ok=True)
+    ckpt_path = "models/shar_encoder_pretrained.pth"
     model.train()
     for epoch in range(epochs):
         total_loss = 0.0
-        
+
         for batch_idx, (x_batch, _) in enumerate(train_loader):
             x_batch = x_batch.to(device)
-            
+
             optimizer.zero_grad()
-            
+
             # Generate two views using Random Masking
             x_i = apply_random_masking_batch(x_batch, mask_prob=0.2)
             x_j = apply_random_masking_batch(x_batch, mask_prob=0.2)
-            
+
             # Get representations
             z_i = model(x_i)
             z_j = model(x_j)
-            
+
             # Compute Contrastive Loss
             loss = contrastive_loss(z_i, z_j, temperature=0.5)
-            
+
             loss.backward()
             optimizer.step()
-            
+
             total_loss += loss.item()
-            
+
         avg_loss = total_loss / len(train_loader)
         if (epoch + 1) % 5 == 0 or epoch == 0:
-            print(f"Epoch [{epoch+1}/{epochs}] - Loss: {avg_loss:.4f}")
-            
+            print(f"Epoch [{epoch+1}/{epochs}] - Loss: {avg_loss:.4f}", flush=True)
+            # Periodic checkpoint so an interrupted run still leaves a usable encoder
+            torch.save(model.encoder.state_dict(), ckpt_path)
+
     print("--- Pre-training Complete ---")
-    
-    # Save the encoder weights for fine-tuning
-    os.makedirs("models", exist_ok=True)
-    torch.save(model.encoder.state_dict(), "models/shar_encoder_pretrained.pth")
-    print("Saved pretrained encoder to 'models/shar_encoder_pretrained.pth'.\n")
+
+    # Save the final encoder weights for fine-tuning
+    torch.save(model.encoder.state_dict(), ckpt_path)
+    print(f"Saved pretrained encoder to '{ckpt_path}'.\n")
     return model.encoder
 
 if __name__ == "__main__":

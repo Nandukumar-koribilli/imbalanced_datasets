@@ -12,12 +12,11 @@ env/
 UCI HAR Dataset/
 wisdm-dataset/
 
-# Trained model checkpoints
+# Trained model checkpoints (large binaries)
 models/*.pth
 
-# Generated figures / reports
-results/*.png
-results/*.pdf
+# Training logs (figures and metrics ARE committed so the README can show them)
+results/training_log*.txt
 
 # OS / editor junk
 .DS_Store
