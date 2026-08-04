@@ -20,7 +20,7 @@ def main():
                         help='Cap the pretraining set size for faster CPU runs (default: use all)')
     args = parser.parse_args()
     
-    device = 'cpu' # Forced CPU as requested
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
     print(f"===========================================================")
     print(f"                    SHAR Pipeline Start                    ")
     print(f"===========================================================")

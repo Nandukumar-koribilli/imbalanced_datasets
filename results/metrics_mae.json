@@ -1,0 +1,47 @@
+{
+  "dataset": "UCI HAR",
+  "method": "MAE",
+  "timestamp": "2026-08-04 21:56:08",
+  "label_ratio": 0.25,
+  "epochs": 50,
+  "test_accuracy": 90.6,
+  "macro_f1": 0.9057,
+  "per_class": {
+    "Walking": {
+      "precision": 0.9818,
+      "recall": 0.9798,
+      "f1": 0.9808,
+      "support": 496
+    },
+    "Walking Upstairs": {
+      "precision": 0.8898,
+      "recall": 0.9257,
+      "f1": 0.9074,
+      "support": 471
+    },
+    "Walking Downstairs": {
+      "precision": 0.9159,
+      "recall": 0.9857,
+      "f1": 0.9495,
+      "support": 420
+    },
+    "Sitting": {
+      "precision": 0.8114,
+      "recall": 0.78,
+      "f1": 0.7954,
+      "support": 491
+    },
+    "Standing": {
+      "precision": 0.8347,
+      "recall": 0.7782,
+      "f1": 0.8054,
+      "support": 532
+    },
+    "Laying": {
+      "precision": 0.9908,
+      "recall": 1.0,
+      "f1": 0.9954,
+      "support": 537
+    }
+  }
+}

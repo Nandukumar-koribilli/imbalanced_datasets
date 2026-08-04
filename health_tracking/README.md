@@ -31,7 +31,7 @@ source ../.venv/bin/activate
 If you haven't already installed the required packages in the root project, make sure they are installed:
 
 ```bash
-pip install streamlit numpy scipy matplotlib seaborn torch torchvision scikit-learn pandas
+python -m pip install streamlit numpy scipy matplotlib seaborn torch torchvision scikit-learn pandas
 ```
 
 > **Note:** If PyTorch is not installed (or fails to load on your machine), the dashboard

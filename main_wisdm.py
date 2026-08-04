@@ -22,7 +22,7 @@ def main():
     np.random.seed(42)
     torch.manual_seed(42)
 
-    device = 'cpu' # Forced CPU as requested
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
     print(f"===========================================================")
     print(f"                    SHAR Pipeline Start                    ")
     print(f"===========================================================")

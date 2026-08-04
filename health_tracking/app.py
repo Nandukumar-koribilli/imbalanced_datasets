@@ -9,10 +9,15 @@ Run:  streamlit run app.py
 
 import streamlit as st
 import numpy as np
-import matplotlib.pyplot as plt
 import matplotlib
 matplotlib.use("Agg")
-import sys, os, io, json, time
+import matplotlib.pyplot as plt
+import os
+os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
+os.environ["OMP_NUM_THREADS"] = "1"
+os.environ["MKL_NUM_THREADS"] = "1"
+os.environ["OPENBLAS_NUM_THREADS"] = "1"
+import sys, io, json, time
 
 # ── Ensure parent project is importable ──────────────────────────────────────
 PARENT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -120,9 +125,16 @@ def activities_for(dataset_name):
     return list(DATASETS[dataset_name]["labels"].values())
 
 
-def load_metrics_for(dataset_name):
+def load_metrics_for(dataset_name, model_type="Contrastive (Original)"):
     """Return the saved training metrics dict for *dataset_name*, or None."""
-    for fname in ("metrics.json", "metrics_wisdm.json"):
+    is_mae = "MAE" in model_type
+    
+    if dataset_name == "UCI HAR":
+        fnames = ["metrics_mae.json"] if is_mae else ["metrics.json"]
+    else:
+        fnames = ["metrics_mae_wisdm.json"] if is_mae else ["metrics_wisdm.json"]
+        
+    for fname in fnames:
         path = os.path.join(PARENT_DIR, "results", fname)
         if os.path.exists(path):
             try:
@@ -344,7 +356,7 @@ def dark_fig(figsize=(10, 4)):
 #  HELPER: Load model
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 @st.cache_resource
-def load_shar_model(dataset_name):
+def load_shar_model(dataset_name, model_type="Contrastive (Original)"):
     """
     Load the SHAR classifier for live inference.
     Prefers the fully fine-tuned checkpoint; falls back to the pretrained
@@ -355,10 +367,29 @@ def load_shar_model(dataset_name):
         return None, None
     ds = DATASETS[dataset_name]
     try:
-        encoder = SHAREncoder(in_channels=ds["in_channels"], seq_len=ds["seq_len"])
+        is_mae = "MAE" in model_type
+        if is_mae:
+            from src.mae_model import MAEEncoder
+            encoder = MAEEncoder(
+                in_channels=ds["in_channels"],
+                seq_len=ds["seq_len"],
+                patch_size=8,
+                embed_dim=128,
+                encoder_depth=4,
+                encoder_heads=4,
+                rep_dim=256,
+            )
+            classifier_ckpt = "mae_classifier_finetuned.pth" if dataset_name == "UCI HAR" else "mae_classifier_finetuned_wisdm.pth"
+            encoder_ckpt = "mae_encoder_pretrained.pth" if dataset_name == "UCI HAR" else "mae_encoder_pretrained_wisdm.pth"
+        else:
+            encoder = SHAREncoder(in_channels=ds["in_channels"], seq_len=ds["seq_len"])
+            classifier_ckpt = ds["classifier_ckpt"]
+            encoder_ckpt = ds["encoder_ckpt"]
+            
         model = SHAR_Classifier(encoder, num_classes=ds["num_classes"])
-        finetuned_path = os.path.join(PARENT_DIR, "models", ds["classifier_ckpt"])
-        encoder_path   = os.path.join(PARENT_DIR, "models", ds["encoder_ckpt"])
+        finetuned_path = os.path.join(PARENT_DIR, "models", classifier_ckpt)
+        encoder_path   = os.path.join(PARENT_DIR, "models", encoder_ckpt)
+        
         if os.path.exists(finetuned_path):
             model.load_state_dict(torch.load(finetuned_path, map_location="cpu"))
             status = "finetuned"
@@ -369,7 +400,8 @@ def load_shar_model(dataset_name):
             return None, None
         model.eval()
         return model, status
-    except Exception:
+    except Exception as e:
+        print(f"Error loading model: {e}")
         return None, None
 
 
@@ -420,6 +452,15 @@ with st.sidebar:
             ["— (stay on setup)"] + dashboard_pages,
             label_visibility="collapsed",
             key="nav_dash",
+        )
+        
+        st.markdown("<br>", unsafe_allow_html=True)
+        st.markdown("##### ⚙️ Model Architecture")
+        model_type = st.radio(
+            " ",
+            ["Contrastive (Original)", "Masked Autoencoder (MAE)"],
+            label_visibility="collapsed",
+            key="model_type"
         )
     else:
         st.caption(f"🔒 Locked — pick a dataset and run iSMOTE first.")
@@ -704,7 +745,7 @@ if page == "🗂️ Dataset & Balancing":
             "Synthetic added": synth,
             "After iSMOTE": b_vals,
         })
-        st.dataframe(table, use_container_width=True, hide_index=True)
+        st.table(table)
 
         # ── 1.5 Peek at a real signal from the selected dataset ──────────────
         st.markdown("<br>", unsafe_allow_html=True)
@@ -785,7 +826,7 @@ if page == "🗂️ Dataset & Balancing":
                 pdf.savefig(fig); plt.close(fig)
 
                 # Page 3 — trained-model metrics, when available for this dataset
-                m = load_metrics_for(ds_name)
+                m = load_metrics_for(ds_name, st.session_state.get("model_type", "Contrastive (Original)"))
                 if m:
                     fig = plt.figure(figsize=(8.27, 11.69))
                     fig.text(0.5, 0.92, "Trained Model — Test Set Results",
@@ -1620,7 +1661,7 @@ elif page == "📊 Activity Classifier":
     """, unsafe_allow_html=True)
 
     # ── Real training metrics (written by main.py / main_wisdm.py) ──────────
-    train_metrics = load_metrics_for(ds_name)
+    train_metrics = load_metrics_for(ds_name, st.session_state.get("model_type", "Contrastive (Original)"))
 
     if train_metrics:
         st.markdown("""<div class="section-card"><h3 style="margin-top:0;">🎓 Trained Model Performance (real test-set numbers)</h3></div>""",
@@ -1669,7 +1710,7 @@ elif page == "📊 Activity Classifier":
                  "`python scripts/plot_embeddings.py`.")
         st.markdown("<br>", unsafe_allow_html=True)
 
-    model, model_status = load_shar_model(ds_name)
+    model, model_status = load_shar_model(ds_name, st.session_state.get("model_type", "Contrastive (Original)"))
     data_dir = ds_info["path"]
 
     if model is None or not os.path.isdir(data_dir):

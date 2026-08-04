@@ -12,14 +12,15 @@ PyTorch implementation of **Self-Supervised Learning for Activity Recognition Ba
 
 ```powershell
 # 1. Install dependencies
-pip install -r requirements.txt
+python -m pip install -r requirements.txt
+python -m pip install "streamlit==1.38.0" "pyarrow==25.0.0" # Critical for Windows stability!
 
-# 2. Launch the Health Tracking Dashboard (works out of the box)
-python -m streamlit run health_tracking/app.py
-
-# 3. (Optional) Train the model, then use the research dashboard
+# 2. Train the models (Contrastive + Masked Autoencoder)
 python main.py --pretrain_epochs 50 --finetune_epochs 50 --label_ratio 0.25
-python -m streamlit run app.py
+python main_mae.py --pretrain_epochs 80 --finetune_epochs 60 --label_ratio 0.25
+
+# 3. Launch the Health Tracking Dashboard
+python -m streamlit run health_tracking/app.py --server.fileWatcherType none
 ```
 
 **The datasets are already in place** — `UCI HAR Dataset/` and `wisdm-dataset/` sit at the project root, right where the code expects them.
@@ -43,7 +44,7 @@ Virtual environment (optional but recommended):
 python -m venv .venv
 .venv\Scripts\activate          # Windows
 # source .venv/bin/activate     # Linux / macOS
-pip install torch torchvision numpy scipy pandas scikit-learn matplotlib seaborn streamlit
+python -m pip install torch torchvision numpy scipy pandas scikit-learn matplotlib seaborn streamlit
 ```
 
 ---
@@ -54,6 +55,8 @@ pip install torch torchvision numpy scipy pandas scikit-learn matplotlib seaborn
 imbalanced_datasets/
 ├── main.py                    # UCI HAR pipeline (pretrain → finetune → evaluate)
 ├── main_wisdm.py              # WISDM pipeline (same, 18 classes)
+├── main_mae.py                # UCI HAR MAE pipeline (masked autoencoder)
+├── main_mae_wisdm.py          # WISDM MAE pipeline
 ├── app.py                     # Research dashboard (Streamlit)
 ├── README.md                  # you are here
 │
@@ -75,8 +78,13 @@ imbalanced_datasets/
 │   ├── random_masking.py      # Random Masking augmentation
 │   ├── lambda_layer.py        # Lambda self-attention (einsum)
 │   ├── shar_model.py          # SHAREncoder / SHAR_Pretrain / SHAR_Classifier
-│   ├── train_pretrain.py      # Phase 1: self-supervised contrastive pre-training
-│   └── train_finetune.py      # Phase 2: supervised fine-tuning + evaluation
+│   ├── mae_model.py           # MAE1D / MAEEncoder (masked autoencoder)
+│   ├── train_pretrain.py      # Contrastive self-supervised pre-training
+│   ├── train_finetune.py      # Contrastive fine-tuning + evaluation
+│   ├── train_pretrain_mae.py      # MAE self-supervised pre-training (UCI HAR)
+│   ├── train_pretrain_mae_wisdm.py # MAE pre-training (WISDM)
+│   ├── train_finetune_mae.py      # MAE fine-tuning + evaluation (UCI HAR)
+│   └── train_finetune_mae_wisdm.py # MAE fine-tuning (WISDM)
 │
 ├── health_tracking/
 │   ├── app.py                 # Health Tracking Dashboard (Streamlit)
@@ -119,7 +127,7 @@ Highlights once a model is trained:
 
 You can go back to Step 1 at any time to switch datasets — the balancing state resets and the dashboard re-locks until you rebalance.
 
-### 2. Train the SHAR model
+### 2. Train the SHAR model (Contrastive)
 
 ```powershell
 # UCI HAR — full run
@@ -132,26 +140,56 @@ python main.py --pretrain_epochs 1 --finetune_epochs 1 --label_ratio 0.10
 python main_wisdm.py --pretrain_epochs 50 --finetune_epochs 50 --label_ratio 0.25
 ```
 
-This produces (in `models/` and `results/`):
+### 3. 🎭 Train with Masked Autoencoder (MAE) — for higher accuracy
 
-| Output | Purpose |
-|---|---|
-| `models/shar_encoder_pretrained.pth` | Self-supervised encoder weights |
-| `models/shar_classifier_finetuned.pth` | **Full fine-tuned classifier** — used by the dashboards for live inference |
-| `results/ismote_distribution.png` | Class balance before/after iSMOTE |
-| `results/confusion_matrix.png` | Test-set confusion matrix |
+The MAE pipeline uses **reconstruction-based** self-supervised learning instead of contrastive learning. The encoder must reconstruct 75% of randomly masked patches, forcing it to learn deeper temporal structure from the sensor data. 
+
+**Run these commands to train the MAE models and enable the "Masked Autoencoder (MAE)" option in the Dashboard:**
+
+```powershell
+# 🏆 UCI HAR — MAE full run (Best Accuracy)
+python main_mae.py --pretrain_epochs 80 --finetune_epochs 60 --label_ratio 0.25
+
+# ⚡ UCI HAR — MAE quick smoke test
+python main_mae.py --pretrain_epochs 2 --finetune_epochs 2 --max_pretrain_samples 500
+
+# 🏆 WISDM — MAE full run (18 classes)
+python main_mae_wisdm.py --pretrain_epochs 80 --finetune_epochs 60 --label_ratio 0.25
+
+# ⚡ WISDM — MAE quick smoke test
+python main_mae_wisdm.py --pretrain_epochs 2 --finetune_epochs 2 --max_pretrain_samples 500
+```
+
+> **MAE-specific arguments**: `--mask_ratio` (0.75 = mask 75% of patches).
+> **GPU auto-detection:** All pipelines automatically use a CUDA GPU if available; otherwise, they seamlessly fall back to CPU.
+
+### Training Outputs
+
+Both pipelines produce outputs in `models/` and `results/`:
+
+| Output | Pipeline | Purpose |
+|---|---|---|
+| `models/shar_encoder_pretrained.pth` | Contrastive | Self-supervised encoder weights |
+| `models/shar_classifier_finetuned.pth` | Contrastive | **Full fine-tuned classifier** — used by dashboards |
+| `models/mae_encoder_pretrained.pth` | MAE | MAE self-supervised encoder weights |
+| `models/mae_classifier_finetuned.pth` | MAE | MAE fine-tuned classifier |
+| `results/ismote_distribution.png` | Both | Class balance before/after iSMOTE |
+| `results/confusion_matrix.png` | Contrastive | Test-set confusion matrix |
+| `results/confusion_matrix_mae.png` | MAE | Test-set confusion matrix (MAE) |
+| `results/metrics.json` | Contrastive | Accuracy, F1, per-class report |
+| `results/metrics_mae.json` | MAE | Accuracy, F1, per-class report (MAE) |
 
 WISDM outputs get a `_wisdm` suffix on all filenames.
 
-**Arguments** (both pipelines): `--data_dir`, `--batch_size` (128), `--lr` (0.002, halved for fine-tuning), `--pretrain_epochs`, `--finetune_epochs`, `--label_ratio` (0.25 = use 25 % of labels).
+**Common arguments** (all pipelines): `--data_dir`, `--batch_size` (128), `--lr`, `--pretrain_epochs`, `--finetune_epochs`, `--label_ratio` (0.25 = use 25 % of labels), `--max_pretrain_samples`.
 
-### 3. Research Dashboard
+### 4. Research Dashboard
 
 ```powershell
 python -m streamlit run app.py
 ```
 
-Explore raw sensor signals, visualize the iSMOTE balancing, and run live classification with the trained encoder.
+Explore raw sensor signals, visualize the iSMOTE balancing, compare Contrastive vs MAE results side-by-side, and run live classification with the trained encoder.
 
 ---
 
@@ -161,13 +199,17 @@ Explore raw sensor signals, visualize the iSMOTE balancing, and run live classif
 2. **Random Masking (RM)** — batch-level pretext-task augmentation that zeroes ~20 % of timesteps to break identity mappings during self-supervised training.
 3. **Lambda Layer + 1D Causal CNN (SHAREncoder)** — an efficient self-attention alternative implemented from scratch with `einsum`, computing the Content Lambda ($L_c = K^T V$) and applying it to the Queries — much cheaper than standard attention for long temporal sequences.
 4. **Contrastive Pre-training** — NT-Xent loss on two randomly-masked views of each sample builds representations that transfer with very little labelled data.
-5. **Health Tracking Application** — MET-based calorie estimation, cadence-based step counting, threshold-based Deep/Light/REM sleep staging, three-phase fall detection (free-fall → impact → immobility), and simulated HR/HRV stress analysis, all driven by the recognized activity.
+5. **Masked Autoencoder (MAE) Pre-training** — Reconstruction-based self-supervised learning that masks 75% of input patches and forces the Transformer encoder to reconstruct them. Learns richer temporal representations than contrastive learning, especially beneficial for imbalanced datasets where within-class temporal patterns matter.
+6. **Health Tracking Application** — MET-based calorie estimation, cadence-based step counting, threshold-based Deep/Light/REM sleep staging, three-phase fall detection (free-fall → impact → immobility), and simulated HR/HRV stress analysis, all driven by the recognized activity.
 
 ## Reproducing the Research Results
 
 ```powershell
-# End-to-end training (saves checkpoints, figures and results/metrics.json)
+# End-to-end Contrastive training
 python main.py --pretrain_epochs 50 --finetune_epochs 50 --label_ratio 0.25
+
+# End-to-end MAE training (for higher accuracy)
+python main_mae.py --pretrain_epochs 80 --finetune_epochs 60 --label_ratio 0.25
 
 # Ablation study: supervised-from-scratch vs SSL vs SSL+iSMOTE,
 # across label ratios (1/5/10/25 %) with 3 seeds and error bars
@@ -182,7 +224,7 @@ python scripts/plot_embeddings.py
 python scripts/make_architecture_diagram.py
 ```
 
-Outputs land in `results/`: `metrics.json` (test accuracy, macro F1, per-class report), `ablations.json` / `ablations.png` / `ablations.md` (README-ready table with mean ± std over seeds), `embedding_tsne.png`, `ismote_distribution.png`, `confusion_matrix.png`.
+Outputs land in `results/`: `metrics.json` / `metrics_mae.json` (test accuracy, macro F1, per-class report), `ablations.json` / `ablations.png` / `ablations.md`, `embedding_tsne.png`, `ismote_distribution.png`, `confusion_matrix.png` / `confusion_matrix_mae.png`.
 
 ## Results on UCI HAR
 
@@ -206,7 +248,7 @@ Note the minority classes (Walking Upstairs / Downstairs — the smallest classe
 ## Testing
 
 ```powershell
-pip install pytest
+python -m pip install pytest
 python -m pytest tests/ -v
 ```
 
@@ -220,8 +262,9 @@ python -m pytest tests/ -v
 |---|---|
 | `streamlit` is not recognized | Use `python -m streamlit run ...`, or open a new terminal (PATH changes don't apply to already-open shells). |
 | `OSError: [WinError 1114] ... c10.dll` on `import torch` | Install <https://aka.ms/vs/17/release/vc_redist.x64.exe>. Reinstalling torch does not help. |
-| "Model or dataset not available" on the Live Activity Classifier page | Run `python main.py` once — it saves `models/shar_classifier_finetuned.pth`, which the dashboard then loads. |
-| Classifier page warns "only the pretrained encoder was found" | Predictions unreliable until you finish fine-tuning (`main.py`/`main_wisdm.py` handles both phases). |
-| iSMOTE is taking too long | The dashboard subsamples to 1,500 windows for a responsive demo (this cap is noted below the before/after chart). For the full-dataset run, use `python main.py` / `python main_wisdm.py`. |
-| Port 8501 already in use | `python -m streamlit run app.py --server.port 8502` |
-| Want to relocate a dataset | Pass `--data_dir "path\to\your\folder"` to `main.py` or `main_wisdm.py`. |
+| **Silent crashes on Windows** (e.g. `ntdll.dll` / `arrow.dll` / Dashboard instantly exiting) | This is a known threading conflict in Python 3.13 on Windows. Fix by downgrading Streamlit: `python -m pip install "streamlit==1.38.0" "pyarrow==25.0.0"`. Also, start the dashboard with the `--server.fileWatcherType none` flag. |
+| "Model or dataset not available" on the Live Activity Classifier page | Run `python main.py` and `python main_mae.py` once — they save the `.pth` files which the dashboard loads. |
+| Classifier page warns "only the pretrained encoder was found" | Predictions unreliable until you finish fine-tuning (`main.py` / `main_mae.py` handles both phases). |
+| iSMOTE is taking too long | The dashboard subsamples to 1,500 windows for a responsive demo. For the full-dataset run, use `python main.py`. |
+| Port 8501 already in use | `python -m streamlit run health_tracking/app.py --server.port 8502` |
+| Want to relocate a dataset | Pass `--data_dir "path\to\your\folder"` to the training scripts. |
