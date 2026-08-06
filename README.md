@@ -57,7 +57,7 @@ python -m venv venv
 source venv/bin/activate  # On Windows: venv\Scripts\activate
 
 # Install dependencies
-pip install -r requirements.txt
+python -m pip install -r requirements.txt
 ```
 
 ## Dataset Setup
@@ -100,7 +100,7 @@ python main.py \
 ### Interactive Demo
 
 ```bash
-streamlit run app.py
+python -m streamlit run health_tracking/app.py
 ```
 
 ### Run Ablation Studies
@@ -126,7 +126,6 @@ python scripts/plot_embeddings.py
 ```
 imbalanced_datasets/
 ├── main.py                         # Entry point: UCI HAR + MAE + I-SMOTE pipeline
-├── app.py                          # Streamlit demo application
 ├── requirements.txt                # Python dependencies
 ├── README.md                       # Project documentation
 ├── .gitignore
@@ -154,6 +153,11 @@ imbalanced_datasets/
 │   ├── random_masking.py           # Random masking augmentation
 │   ├── train_pretrain_mae.py       # MAE pre-training logic
 │   └── train_finetune_mae.py       # MAE fine-tuning & evaluation logic
+├── health_tracking/                # Health Tracking Application Module
+│   ├── app.py                      # Health tracking Streamlit dashboard
+│   ├── config.py                   # MET values, sleep & fall thresholds
+│   ├── health_metrics.py           # BMR, calories, step counter, sleep & fall engine
+│   └── README.md
 ├── models/                         # Saved model weights (.pth)
 ├── results/                        # Training results & plots
 ├── scripts/                        # Utility scripts
@@ -162,6 +166,7 @@ imbalanced_datasets/
 │   ├── make_architecture_diagram.py # Generate architecture figures
 │   └── plot_embeddings.py          # t-SNE / PCA embedding plots
 ├── tests/                          # Unit tests
+│   ├── test_health_metrics.py      # Health metrics engine tests
 │   ├── test_ismote.py              # I-SMOTE tests
 │   ├── test_labels.py              # Label consistency tests
 │   └── test_model.py               # Model architecture tests
