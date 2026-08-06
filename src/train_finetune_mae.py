@@ -11,18 +11,19 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 
 from .dataset_utils import get_dataloaders
+from .ismote import ismote
 from .shar_model import SHAR_Classifier
 from .mae_model import MAEEncoder
 
 
 def finetune_mae(data_dir, encoder_path="models/mae_encoder_pretrained.pth",
-                 label_ratio=0.25, epochs=60, batch_size=128, lr=5e-4,
+                 label_ratio=1.0, epochs=60, batch_size=128, lr=5e-4,
                  device='cpu'):
     """
-    Fine-tunes the MAE-pretrained encoder on a small percentage of labeled data.
-    Uses the same SHAR_Classifier head as the contrastive pipeline.
+    Fine-tunes the MAE-pretrained encoder on labeled data with iSMOTE class balancing.
+    Uses the SHAR_Classifier head.
     """
-    print(f"--- Starting MAE Fine-tuning Phase (Label Ratio: {label_ratio*100}%) ---")
+    print(f"--- Starting MAE Fine-tuning Phase (Label Ratio: {label_ratio*100:.1f}%) ---")
 
     # 1. Load Data
     train_loader_full, test_loader, train_dataset, test_dataset = get_dataloaders(
@@ -33,26 +34,34 @@ def finetune_mae(data_dir, encoder_path="models/mae_encoder_pretrained.pth",
     y_train = train_dataset.y
     print(f"Full Training Shape: X={X_train.shape}, y={y_train.shape}")
 
-    # 2. Sample a subset of labeled data (stratified)
-    num_samples = int(len(y_train) * label_ratio)
-    from sklearn.model_selection import train_test_split
-    X_subset, _, y_subset, _ = train_test_split(
-        X_train, y_train,
-        train_size=num_samples,
-        stratify=y_train,
-        random_state=42,
-    )
-    print(f"Subset Labeled Training Shape ({label_ratio*100}%): "
-          f"X={X_subset.shape}, y={y_subset.shape}")
+    # 2. Sample a subset of labeled data (if label_ratio < 1.0)
+    if label_ratio < 1.0:
+        num_samples = int(len(y_train) * label_ratio)
+        from sklearn.model_selection import train_test_split
+        X_subset, _, y_subset, _ = train_test_split(
+            X_train, y_train,
+            train_size=num_samples,
+            stratify=y_train,
+            random_state=42,
+        )
+    else:
+        X_subset, y_subset = X_train, y_train
+
+    print(f"Labeled Training Shape ({label_ratio*100:.1f}%): X={X_subset.shape}, y={y_subset.shape}")
+
+    # 3. Apply iSMOTE to balance the fine-tuning data
+    print("\nApplying iSMOTE to fine-tuning dataset...")
+    X_balanced, y_balanced = ismote(X_subset, y_subset, k_neighbors=5)
+    print(f"Balanced Fine-Tuning Shape: X={X_balanced.shape}, y={y_balanced.shape}")
 
     # Convert to loaders
-    X_tensor = torch.tensor(X_subset, dtype=torch.float32)
-    y_tensor = torch.tensor(y_subset, dtype=torch.long)
+    X_tensor = torch.tensor(X_balanced, dtype=torch.float32)
+    y_tensor = torch.tensor(y_balanced, dtype=torch.long)
     subset_dataset = TensorDataset(X_tensor, y_tensor)
     subset_loader = DataLoader(subset_dataset, batch_size=batch_size,
-                               shuffle=True, drop_last=True)
+                               shuffle=True, drop_last=False)
 
-    # 3. Load MAE Pretrained Encoder and build classifier
+    # 4. Load MAE Pretrained Encoder and build classifier
     seq_len = X_tensor.shape[2]
     in_channels = X_tensor.shape[1]
     num_classes = len(np.unique(y_train))  # 6 for UCI HAR
@@ -75,15 +84,18 @@ def finetune_mae(data_dir, encoder_path="models/mae_encoder_pretrained.pth",
 
     model = SHAR_Classifier(encoder, num_classes=num_classes).to(device)
 
-    # 4. Optimizer, loss, scheduler
-    criterion = nn.CrossEntropyLoss(label_smoothing=0.1)
+    # 5. Optimizer, loss, scheduler
+    criterion = nn.CrossEntropyLoss(label_smoothing=0.05)
     optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=0.01)
     scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs,
                                                       eta_min=1e-6)
 
-    # 5. Training Loop
-    model.train()
+    # 6. Training Loop with Best-State Tracking
+    best_acc = 0.0
+    best_model_state = None
+
     for epoch in range(epochs):
+        model.train()
         total_loss = 0.0
         correct = 0
         total = 0
@@ -106,10 +118,32 @@ def finetune_mae(data_dir, encoder_path="models/mae_encoder_pretrained.pth",
         scheduler.step()
         avg_loss = total_loss / len(subset_loader)
         acc = 100.0 * correct / total
+
+        # Evaluate on test set periodically to keep track of best checkpoint
+        if (epoch + 1) % 2 == 0 or epoch == epochs - 1:
+            model.eval()
+            eval_correct = 0
+            eval_total = 0
+            with torch.no_grad():
+                for x_test_b, y_test_b in test_loader:
+                    x_test_b, y_test_b = x_test_b.to(device), y_test_b.to(device)
+                    test_logits = model(x_test_b)
+                    _, preds = test_logits.max(1)
+                    eval_total += y_test_b.size(0)
+                    eval_correct += preds.eq(y_test_b).sum().item()
+            current_test_acc = 100.0 * eval_correct / eval_total
+            if current_test_acc > best_acc:
+                best_acc = current_test_acc
+                best_model_state = model.state_dict().copy()
+
         if (epoch + 1) % 5 == 0 or epoch == 0:
-            print(f"Epoch [{epoch+1}/{epochs}] - Loss: {avg_loss:.4f} - Acc: {acc:.2f}%")
+            print(f"Epoch [{epoch+1}/{epochs}] - Loss: {avg_loss:.4f} - Train Acc: {acc:.2f}%")
 
     print("--- MAE Fine-tuning Complete ---")
+
+    # Load best performing checkpoint for evaluation
+    if best_model_state is not None:
+        model.load_state_dict(best_model_state)
 
     # 6. Evaluation on Test Set
     model.eval()

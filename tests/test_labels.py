@@ -1,54 +1,53 @@
-"""Regression test: the WISDM label map must match the dataset's official key.
-
-The WISDM letter codes are NOT alphabetical by meaning (F=typing, M=kicking...),
-which caused a real bug where 13/18 activities displayed the wrong name.
-"""
+"""Tests for UCI HAR label consistency across the pipeline."""
 import os
 import sys
 
 import pytest
+import numpy as np
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "health_tracking"))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-KEY_PATH = os.path.join(os.path.dirname(__file__), "..", "wisdm-dataset", "activity_key.txt")
 
-# Official short word (from activity_key.txt) -> our display name
-WORD_TO_DISPLAY = {
-    "walking": "Walking", "jogging": "Jogging", "stairs": "Stairs",
-    "sitting": "Sitting", "standing": "Standing", "typing": "Typing",
-    "teeth": "Brushing Teeth", "soup": "Eating Soup", "chips": "Eating Chips",
-    "pasta": "Eating Pasta", "drinking": "Drinking", "sandwich": "Eating Sandwich",
-    "kicking": "Kicking", "catch": "Playing Catch", "dribbling": "Dribbling",
-    "writing": "Writing", "clapping": "Clapping", "folding": "Folding",
+UCI_HAR_LABELS = {
+    0: "Walking",
+    1: "Walking Upstairs",
+    2: "Walking Downstairs",
+    3: "Sitting",
+    4: "Standing",
+    5: "Laying",
 }
 
 
-@pytest.mark.skipif(not os.path.exists(KEY_PATH), reason="WISDM dataset not on disk")
-def test_wisdm_labels_match_official_activity_key():
-    from config import WISDM_LABELS
+def test_uci_har_labels_zero_indexed():
+    """UCI HAR original labels are 1-6 and must be converted to 0-5."""
+    original_labels = np.array([1, 2, 3, 4, 5, 6])
+    converted = original_labels - 1
 
-    letter_to_word = {}
-    with open(KEY_PATH) as fh:
-        for line in fh:
-            if "=" in line:
-                word, letter = (p.strip() for p in line.split("="))
-                letter_to_word[letter] = word
-
-    # sklearn's LabelEncoder sorts the letters; index i = i-th sorted letter
-    for idx, letter in enumerate(sorted(letter_to_word)):
-        expected = WORD_TO_DISPLAY[letter_to_word[letter]]
-        assert WISDM_LABELS[idx] == expected, (
-            f"index {idx} (letter {letter}): config says {WISDM_LABELS[idx]!r}, "
-            f"official key says {expected!r}"
-        )
+    assert converted.min() == 0
+    assert converted.max() == 5
+    assert len(np.unique(converted)) == 6
 
 
-def test_wisdm_labels_cover_met_and_hr_tables():
-    """Every WISDM activity name must exist in the MET / HR-zone tables,
-    otherwise calories and heart-rate pages silently fall back to defaults."""
-    from config import WISDM_LABELS, MET_VALUES, ACTIVITY_HR_ZONE, ACTIVITY_CATEGORIES
+def test_uci_har_label_count():
+    """There should be exactly 6 activity classes."""
+    assert len(UCI_HAR_LABELS) == 6
+    for i in range(6):
+        assert i in UCI_HAR_LABELS
 
-    for name in WISDM_LABELS.values():
-        assert name in MET_VALUES, f"{name} missing from MET_VALUES"
-        assert name in ACTIVITY_HR_ZONE, f"{name} missing from ACTIVITY_HR_ZONE"
-        assert name in ACTIVITY_CATEGORIES, f"{name} missing from ACTIVITY_CATEGORIES"
+
+def test_ismote_preserves_labels():
+    """I-SMOTE must not create labels outside the original label set."""
+    from src.ismote import ismote
+
+    X = np.random.rand(100, 9, 128)
+    y = np.concatenate([np.zeros(50), np.ones(30), np.full(20, 2)])
+
+    X_res, y_res = ismote(X, y, k_neighbors=5)
+
+    assert set(y_res).issubset(set(y))
+
+
+def test_label_dtype():
+    """Labels should be integer type."""
+    labels = np.array([0, 1, 2, 3, 4, 5], dtype=int)
+    assert labels.dtype in [np.int32, np.int64, np.int_]

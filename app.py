@@ -185,123 +185,38 @@ if page == "Overview":
     st.markdown("---")
     
     st.subheader("Visual Results & Reports")
-    st.info("💡 **Instructions**: To generate or update these reports, you must run the training pipelines in your terminal:\n\n"
-            "- For UCI HAR (Contrastive): `python main.py`\n"
-            "- For WISDM (Contrastive): `python main_wisdm.py`\n"
-            "- For UCI HAR (MAE): `python main_mae.py`\n"
-            "- For WISDM (MAE): `python main_mae_wisdm.py`")
-            
-    tab_uci, tab_wisdm, tab_mae_uci, tab_mae_wisdm = st.tabs(
-        ["UCI HAR (Contrastive)", "WISDM (Contrastive)",
-         "UCI HAR (MAE)", "WISDM (MAE)"])
-    
-    with tab_uci:
-        st.markdown("#### UCI HAR Results")
-        res_col1, res_col2 = st.columns(2)
-        with res_col1:
-            st.markdown("**iSMOTE Class Distribution**")
-            if os.path.exists("results/ismote_distribution.png"):
-                st.image("results/ismote_distribution.png")
-            else:
-                st.warning("iSMOTE graph not found. Run `python main.py` to generate it.")
-                
-        with res_col2:
-            st.markdown("**Model Performance (Confusion Matrix)**")
-            if os.path.exists("results/confusion_matrix.png"):
-                st.image("results/confusion_matrix.png")
-            else:
-                st.warning("Confusion matrix not found. Run `python main.py` to generate it.")
+    st.info("💡 **Instructions**: To generate or update these reports, run the training pipeline in your terminal:\n\n"
+            "`python main.py`")
 
-    with tab_wisdm:
-        st.markdown("#### WISDM Dataset Results")
-        res_col1, res_col2 = st.columns(2)
-        with res_col1:
-            st.markdown("**iSMOTE Class Distribution**")
-            if os.path.exists("results/ismote_distribution_wisdm.png"):
-                st.image("results/ismote_distribution_wisdm.png")
-            else:
-                st.warning("iSMOTE graph not found. Run `python main_wisdm.py` to generate it.")
-                
-        with res_col2:
-            st.markdown("**Model Performance (Confusion Matrix)**")
-            if os.path.exists("results/confusion_matrix_wisdm.png"):
-                st.image("results/confusion_matrix_wisdm.png")
-            else:
-                st.warning("Confusion matrix not found. Run `python main_wisdm.py` to generate it.")
+    st.markdown("#### UCI HAR — MAE + I-SMOTE Results")
+    st.markdown("MAE pre-trains using **reconstruction** of 75% masked patches, "
+                "learning rich temporal representations from balanced sensor data.")
+    res_col1, res_col2 = st.columns(2)
+    with res_col1:
+        st.markdown("**iSMOTE Class Distribution**")
+        if os.path.exists("results/ismote_distribution_mae.png"):
+            st.image("results/ismote_distribution_mae.png")
+        else:
+            st.warning("Run `python main.py` to generate results.")
+    with res_col2:
+        st.markdown("**Confusion Matrix**")
+        if os.path.exists("results/confusion_matrix_mae.png"):
+            st.image("results/confusion_matrix_mae.png")
+        else:
+            st.warning("Run `python main.py` to generate results.")
 
-    with tab_mae_uci:
-        st.markdown("#### UCI HAR — Masked Autoencoder (MAE) Results")
-        st.markdown("MAE pre-trains using **reconstruction** of 75% masked patches, "
-                    "learning richer temporal representations than contrastive learning.")
-        res_col1, res_col2 = st.columns(2)
-        with res_col1:
-            st.markdown("**iSMOTE Class Distribution**")
-            if os.path.exists("results/ismote_distribution_mae.png"):
-                st.image("results/ismote_distribution_mae.png")
-            else:
-                st.warning("Run `python main_mae.py` to generate MAE results.")
-        with res_col2:
-            st.markdown("**MAE Confusion Matrix**")
-            if os.path.exists("results/confusion_matrix_mae.png"):
-                st.image("results/confusion_matrix_mae.png")
-            else:
-                st.warning("Run `python main_mae.py` to generate MAE results.")
-
-        # Show metrics comparison if both exist
-        if os.path.exists("results/metrics.json") and os.path.exists("results/metrics_mae.json"):
-            import json
-            with open("results/metrics.json") as f:
-                m_contrastive = json.load(f)
-            with open("results/metrics_mae.json") as f:
-                m_mae = json.load(f)
-            st.markdown("---")
-            st.markdown("##### 📊 Contrastive vs MAE Comparison")
-            comp_col1, comp_col2 = st.columns(2)
-            with comp_col1:
-                st.metric("Contrastive Accuracy", f"{m_contrastive['test_accuracy']}%")
-                st.metric("Contrastive Macro F1", f"{m_contrastive['macro_f1']}")
-            with comp_col2:
-                acc_delta = round(m_mae['test_accuracy'] - m_contrastive['test_accuracy'], 2)
-                f1_delta = round(m_mae['macro_f1'] - m_contrastive['macro_f1'], 4)
-                st.metric("MAE Accuracy", f"{m_mae['test_accuracy']}%", delta=f"{acc_delta}%")
-                st.metric("MAE Macro F1", f"{m_mae['macro_f1']}", delta=f"{f1_delta}")
-
-    with tab_mae_wisdm:
-        st.markdown("#### WISDM — Masked Autoencoder (MAE) Results")
-        st.markdown("MAE pre-trains using **reconstruction** of 75% masked patches, "
-                    "learning richer temporal representations than contrastive learning.")
-        res_col1, res_col2 = st.columns(2)
-        with res_col1:
-            st.markdown("**iSMOTE Class Distribution**")
-            if os.path.exists("results/ismote_distribution_mae_wisdm.png"):
-                st.image("results/ismote_distribution_mae_wisdm.png")
-            else:
-                st.warning("Run `python main_mae_wisdm.py` to generate MAE results.")
-        with res_col2:
-            st.markdown("**MAE Confusion Matrix**")
-            if os.path.exists("results/confusion_matrix_mae_wisdm.png"):
-                st.image("results/confusion_matrix_mae_wisdm.png")
-            else:
-                st.warning("Run `python main_mae_wisdm.py` to generate MAE results.")
-
-        # Show metrics comparison if both exist
-        if os.path.exists("results/metrics_wisdm.json") and os.path.exists("results/metrics_mae_wisdm.json"):
-            import json
-            with open("results/metrics_wisdm.json") as f:
-                m_contrastive = json.load(f)
-            with open("results/metrics_mae_wisdm.json") as f:
-                m_mae = json.load(f)
-            st.markdown("---")
-            st.markdown("##### 📊 Contrastive vs MAE Comparison")
-            comp_col1, comp_col2 = st.columns(2)
-            with comp_col1:
-                st.metric("Contrastive Accuracy", f"{m_contrastive['test_accuracy']}%")
-                st.metric("Contrastive Macro F1", f"{m_contrastive['macro_f1']}")
-            with comp_col2:
-                acc_delta = round(m_mae['test_accuracy'] - m_contrastive['test_accuracy'], 2)
-                f1_delta = round(m_mae['macro_f1'] - m_contrastive['macro_f1'], 4)
-                st.metric("MAE Accuracy", f"{m_mae['test_accuracy']}%", delta=f"{acc_delta}%")
-                st.metric("MAE Macro F1", f"{m_mae['macro_f1']}", delta=f"{f1_delta}")
+    # Show metrics if available
+    if os.path.exists("results/metrics_mae.json"):
+        import json
+        with open("results/metrics_mae.json") as f:
+            m_mae = json.load(f)
+        st.markdown("---")
+        st.markdown("##### 📊 Model Metrics")
+        comp_col1, comp_col2 = st.columns(2)
+        with comp_col1:
+            st.metric("Test Accuracy", f"{m_mae['test_accuracy']}%")
+        with comp_col2:
+            st.metric("Macro F1-Score", f"{m_mae['macro_f1']}")
 
 # --- PAGE: DATA EXPLORATION ---
 elif page == "Data Exploration":

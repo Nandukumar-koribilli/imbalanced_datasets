@@ -24,11 +24,9 @@ def test_pretrain_projector_dim():
     assert z.shape == (4, 128)
 
 
-def test_classifier_logits_uci_and_wisdm():
-    enc9 = SHAREncoder(in_channels=9, seq_len=128)
-    assert SHAR_Classifier(enc9, num_classes=6)(torch.randn(2, 9, 128)).shape == (2, 6)
-    enc3 = SHAREncoder(in_channels=3, seq_len=128)
-    assert SHAR_Classifier(enc3, num_classes=18)(torch.randn(2, 3, 128)).shape == (2, 18)
+def test_classifier_logits_uci_har():
+    enc = SHAREncoder(in_channels=9, seq_len=128)
+    assert SHAR_Classifier(enc, num_classes=6)(torch.randn(2, 9, 128)).shape == (2, 6)
 
 
 def test_random_masking_zeroes_but_preserves_shape():

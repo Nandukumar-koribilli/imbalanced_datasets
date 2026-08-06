@@ -52,7 +52,7 @@ def main():
     ax.text(0.4, 6.9, "PHASE 1 · SELF-SUPERVISED PRE-TRAINING (no labels)",
             color=AMBER, fontsize=10, fontweight="bold")
     box(ax, 0.4, 5.3, 2.1, 1.1, "Raw sensor windows",
-        "UCI HAR 9ch / WISDM 3ch\nimbalanced classes", edge=RED)
+        "UCI HAR 9ch\nimbalanced classes", edge=RED)
     box(ax, 3.1, 5.3, 1.9, 1.1, "iSMOTE", "KNN-validated\nminority oversampling", edge=GREEN)
     box(ax, 5.6, 5.3, 2.0, 1.1, "Random Masking ×2", "two corrupted views\n~20% timesteps zeroed", edge=AMBER)
     box(ax, 8.2, 5.3, 2.6, 1.1, "SHAREncoder",

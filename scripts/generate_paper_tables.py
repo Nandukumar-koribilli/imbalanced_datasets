@@ -1,44 +1,71 @@
-import numpy as np
+"""
+Generate formatted tables for paper/report from experiment results.
+"""
 
-def print_paper_style_table():
-    title = "TABLE V"
-    subtitle = "F1-SCORE FOR THE CLASSIFICATION RESULTS OF HAR IN THE UCI HAR DATASET"
-    
-    print("\n" + title.center(120))
-    print(subtitle.center(120))
-    print("-" * 140)
-    
-    # Header rows mimicking the PDF
-    header1 = f"{'Labeling rate':<15} | {'100%':<25} | {'100%':<15} | {'100%':<10} | {'100%':<18} | {'100%':<12} | {'100%':<12} | {'50%':<12} | {'25%':<12} | {'10%':<12}"
-    header2 = f"{'Activity':<15} | {'DeepConvLSTM + Attention':<25} | {'HAR+ Attention':<15} | {'DCC+ MSA':<10} | {'SHAR original data':<18} | {'SHAR SMOTE':<12} | {'SHAR iSMOTE':<12} | {'SHAR iSMOTE':<12} | {'SHAR iSMOTE':<12} | {'SHAR iSMOTE':<12}"
-    
-    print(header1)
-    print(header2)
-    print("=" * 140)
-    
-    # Activities for UCI HAR Dataset
-    activities = ['Walking', 'Upstairs', 'Downstairs', 'Sitting', 'Standing', 'Laying']
-    
-    # Benchmark approximations mapped from paper literature adjusted to our dataset's activities
-    d1 = [83.11, 85.29, 80.65, 97.53, 95.44, 96.83]  # DeepConvLSTM
-    d2 = [84.51, 85.51, 86.89, 97.11, 94.39, 97.21]  # HAR+ attention
-    d3 = [85.71, 89.75, 93.84, 97.63, 96.93, 98.57]  # DCC+ MSA
-    d4 = [88.96, 94.45, 94.91, 98.36, 97.16, 99.69]  # SHAR original data
-    d5 = [89.27, 95.26, 95.21, 98.12, 97.49, 98.24]  # SHAR SMOTE
-    d6 = [94.56, 99.61, 97.64, 99.55, 98.39, 99.89]  # SHAR iSMOTE 100%
-    d7 = [92.88, 97.21, 94.76, 99.17, 97.00, 97.32]  # SHAR iSMOTE 50%
-    d8 = [91.81, 95.63, 93.12, 98.19, 96.59, 97.00]  # SHAR iSMOTE 25% (Our results mirror this)
-    d9 = [89.11, 92.91, 92.68, 97.33, 95.88, 96.11]  # SHAR iSMOTE 10%
-    
-    for i, act in enumerate(activities):
-        row = f"{act:<15} | {d1[i]:<25.2f} | {d2[i]:<15.2f} | {d3[i]:<10.2f} | {d4[i]:<18.2f} | {d5[i]:<12.2f} | {d6[i]:<12.2f} | {d7[i]:<12.2f} | {d8[i]:<12.2f} | {d9[i]:<12.2f}"
-        print(row)
-        
-    print("-" * 140)
-    avg_row = f"{'Average':<15} | {np.mean(d1):<25.2f} | {np.mean(d2):<15.2f} | {np.mean(d3):<10.2f} | {np.mean(d4):<18.2f} | {np.mean(d5):<12.2f} | {np.mean(d6):<12.2f} | {np.mean(d7):<12.2f} | {np.mean(d8):<12.2f} | {np.mean(d9):<12.2f}"
-    print(avg_row)
-    print("-" * 140)
-    print("\n")
+import json
+import os
+
+
+def generate_results_table(results_dir='results'):
+    """Generate a formatted results table from metrics files."""
+    metrics_files = {
+        'MAE + I-SMOTE (UCI HAR)': 'metrics_mae.json',
+    }
+
+    print("=" * 80)
+    print("RESULTS TABLE")
+    print("=" * 80)
+    print(f"{'Method':<30} {'Accuracy':>10} {'Macro F1':>10} {'Weighted F1':>10}")
+    print("-" * 80)
+
+    for method, filename in metrics_files.items():
+        filepath = os.path.join(results_dir, filename)
+        if os.path.exists(filepath):
+            with open(filepath) as f:
+                metrics = json.load(f)
+
+            acc = metrics.get('test_accuracy', 0)
+            macro_f1 = metrics.get('macro_f1', metrics.get('macro_avg', {}).get('f1-score', 0))
+            weighted_f1 = metrics.get('weighted_avg', {}).get('f1-score', 0)
+
+            print(f"{method:<30} {acc:>10.4f} {macro_f1:>10.4f} {weighted_f1:>10.4f}")
+        else:
+            print(f"{method:<30} {'N/A':>10} {'N/A':>10} {'N/A':>10}")
+
+    print("=" * 80)
+
+
+def generate_per_class_table(metrics_file='results/metrics_mae.json'):
+    """Generate per-class performance table."""
+    if not os.path.exists(metrics_file):
+        print(f"Metrics file not found: {metrics_file}")
+        return
+
+    with open(metrics_file) as f:
+        metrics = json.load(f)
+
+    activity_labels = ['Walking', 'Walking Upstairs', 'Walking Downstairs',
+                      'Sitting', 'Standing', 'Laying']
+
+    print("\n" + "=" * 70)
+    print("PER-CLASS PERFORMANCE")
+    print("=" * 70)
+    print(f"{'Activity':<25} {'Precision':>12} {'Recall':>12} {'F1-Score':>12}")
+    print("-" * 70)
+
+    per_class = metrics.get('per_class', {})
+    for key, values in per_class.items():
+        name = key if not key.isdigit() else (
+            activity_labels[int(key)] if int(key) < len(activity_labels) else f"Class {key}"
+        )
+        p = values.get('precision', 0)
+        r = values.get('recall', 0)
+        f1 = values.get('f1-score', values.get('f1', 0))
+        print(f"{name:<25} {p:>12.4f} {r:>12.4f} {f1:>12.4f}")
+
+    print("=" * 70)
+
 
 if __name__ == '__main__':
-    print_paper_style_table()
+    generate_results_table()
+    generate_per_class_table()
